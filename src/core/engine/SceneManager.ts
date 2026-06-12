@@ -16,9 +16,12 @@ import type {
   AnalysisReport,
   DisplayMode,
   GizmoMode,
+  Measurement,
   MeshData,
   PartInfo,
   Projection,
+  SectionOptions,
+  Vec3,
   ViewPreset,
 } from '../types'
 import { createMaterials, type DisplayMaterialSet } from './materials'
@@ -39,6 +42,17 @@ export interface SceneManagerEvents {
   partsChanged: () => void
   /** Selection changed from a viewport tap. */
   selectionChanged: (id: string | null) => void
+  /** A surface/vertex point was picked while measure-pick mode is armed. */
+  pointPicked: (point: Vec3) => void
+}
+
+/** One rendered dimension: line + endpoint markers + screen-sized label. */
+interface MeasureItem {
+  group: THREE.Group
+  markers: THREE.Mesh[]
+  sprite: THREE.Sprite
+  /** canvas width / height, for sprite scaling. */
+  aspect: number
 }
 
 /** Crease angle: edges sharper than this stay hard instead of being smoothed. */
@@ -71,10 +85,16 @@ export class SceneManager {
   private keyLight: THREE.DirectionalLight
   private shadowCatcher: THREE.Mesh
   private highlightGroup = new THREE.Group()
+  private measureGroup = new THREE.Group()
+  private measureItems = new Map<string, MeasureItem>()
+  private pendingMarker: THREE.Mesh | null = null
+  private pickMode = false
+  private sectionHelper: THREE.Object3D | null = null
   private backgroundTexture: THREE.Texture | null = null
   private listeners: { [K in keyof SceneManagerEvents]: Set<SceneManagerEvents[K]> } = {
     partsChanged: new Set(),
     selectionChanged: new Set(),
+    pointPicked: new Set(),
   }
   private tween: {
     fromPos: THREE.Vector3
@@ -134,6 +154,8 @@ export class SceneManager {
     this.grid = new THREE.GridHelper(100, 50, 0x4a4640, 0x2e2c28)
     this.scene.add(this.grid)
     this.scene.add(this.highlightGroup)
+    this.scene.add(this.measureGroup)
+    this.renderer.localClippingEnabled = true
 
     // Key light exists mostly to cast the soft ground shadow; the softbox
     // environment provides the actual illumination.
@@ -382,8 +404,276 @@ export class SceneManager {
     this.raycaster.setFromCamera(ndc, this.activeCamera)
     const meshes = [...this.parts.values()].filter((p) => p.mesh.visible).map((p) => p.mesh)
     const hits = this.raycaster.intersectObjects(meshes, false)
+
+    if (this.pickMode) {
+      if (hits.length) {
+        const p = this.snapToVertex(hits[0])
+        this.emit('pointPicked', [p.x, p.y, p.z])
+      }
+      return
+    }
+
     const id = hits.length ? (hits[0].object.userData.partId as string) : null
     if (id !== this.selectedId) this.select(id)
+  }
+
+  /** Snap a raycast hit to the nearest triangle vertex when within ~14 px. */
+  private snapToVertex(hit: THREE.Intersection): THREE.Vector3 {
+    const face = hit.face
+    const mesh = hit.object as THREE.Mesh
+    if (!face) return hit.point
+    const pos = mesh.geometry.getAttribute('position')
+    let best: THREE.Vector3 | null = null
+    let bestDist = this.worldPerPixel(hit.point) * 14
+    for (const i of [face.a, face.b, face.c]) {
+      const v = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld)
+      const d = v.distanceTo(hit.point)
+      if (d < bestDist) {
+        bestDist = d
+        best = v
+      }
+    }
+    return best ?? hit.point
+  }
+
+  // ---------- measurements ----------
+
+  setPickMode(on: boolean) {
+    this.pickMode = on
+    if (!on) this.setPendingMarker(null)
+  }
+
+  /** Marker for the first picked point while waiting for the second. */
+  setPendingMarker(point: Vec3 | null) {
+    if (this.pendingMarker) {
+      this.measureGroup.remove(this.pendingMarker)
+      this.pendingMarker.geometry.dispose()
+      ;(this.pendingMarker.material as THREE.Material).dispose()
+      this.pendingMarker = null
+    }
+    if (!point) return
+    this.pendingMarker = this.makeMarker('#e8c260')
+    this.pendingMarker.position.fromArray(point)
+    this.measureGroup.add(this.pendingMarker)
+  }
+
+  addMeasurement(m: Measurement) {
+    this.removeMeasurement(m.id)
+    const a = new THREE.Vector3().fromArray(m.a)
+    const b = new THREE.Vector3().fromArray(m.b)
+    const group = new THREE.Group()
+
+    const lineGeo = new THREE.BufferGeometry().setFromPoints([a, b])
+    const line = new THREE.Line(
+      lineGeo,
+      new THREE.LineBasicMaterial({ color: m.color, depthTest: false, transparent: true }),
+    )
+    line.renderOrder = 998
+    group.add(line)
+
+    const markers = [a, b].map((p) => {
+      const marker = this.makeMarker(m.color)
+      marker.position.copy(p)
+      group.add(marker)
+      return marker
+    })
+
+    const { sprite, aspect } = this.makeLabelSprite(`${m.distance.toFixed(2)} mm`, m.color)
+    sprite.position.lerpVectors(a, b, 0.5)
+    group.add(sprite)
+
+    this.measureGroup.add(group)
+    this.measureItems.set(m.id, { group, markers, sprite, aspect })
+  }
+
+  removeMeasurement(id: string) {
+    const item = this.measureItems.get(id)
+    if (!item) return
+    this.measureGroup.remove(item.group)
+    item.group.traverse((obj) => {
+      const o = obj as THREE.Mesh
+      o.geometry?.dispose()
+      const mat = o.material as THREE.Material & { map?: THREE.Texture | null }
+      mat?.map?.dispose?.()
+      mat?.dispose?.()
+    })
+    this.measureItems.delete(id)
+  }
+
+  clearMeasurements() {
+    for (const id of [...this.measureItems.keys()]) this.removeMeasurement(id)
+    this.setPendingMarker(null)
+  }
+
+  private makeMarker(color: string): THREE.Mesh {
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.5, 12, 8),
+      new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true }),
+    )
+    marker.renderOrder = 999
+    return marker
+  }
+
+  private makeLabelSprite(text: string, color: string): { sprite: THREE.Sprite; aspect: number } {
+    const dpr = 2
+    const font = `600 ${36 * dpr}px ui-monospace, SF Mono, Menlo, monospace`
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')!
+    ctx.font = font
+    const pad = 16 * dpr
+    const textW = ctx.measureText(text).width
+    canvas.width = Math.ceil(textW + pad * 2)
+    canvas.height = 64 * dpr
+
+    ctx.font = font
+    ctx.textBaseline = 'middle'
+    const r = 14 * dpr
+    ctx.beginPath()
+    ctx.roundRect(dpr, dpr, canvas.width - 2 * dpr, canvas.height - 2 * dpr, r)
+    ctx.fillStyle = 'rgba(24, 22, 18, 0.92)'
+    ctx.fill()
+    ctx.lineWidth = 2 * dpr
+    ctx.strokeStyle = color
+    ctx.stroke()
+    ctx.fillStyle = '#f2efe9'
+    ctx.fillText(text, pad, canvas.height / 2 + 2 * dpr)
+
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    const sprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }),
+    )
+    sprite.renderOrder = 1000
+    return { sprite, aspect: canvas.width / canvas.height }
+  }
+
+  /** World size of one screen pixel at a given point (both camera types). */
+  private worldPerPixel(at: THREE.Vector3): number {
+    const h = this.container.clientHeight || 1
+    if (this.activeCamera === this.perspCamera) {
+      const dist = this.perspCamera.position.distanceTo(at)
+      return (2 * dist * Math.tan(THREE.MathUtils.degToRad(this.perspCamera.fov) / 2)) / h
+    }
+    return (this.orthoCamera.top - this.orthoCamera.bottom) / (h * this.orthoCamera.zoom)
+  }
+
+  /** Keep measurement markers/labels a constant screen size. */
+  private updateMeasureScales() {
+    const MARKER_PX = 9
+    const LABEL_PX = 30
+    for (const item of this.measureItems.values()) {
+      for (const marker of item.markers) {
+        marker.scale.setScalar(this.worldPerPixel(marker.position) * MARKER_PX)
+      }
+      const labelH = this.worldPerPixel(item.sprite.position) * LABEL_PX
+      item.sprite.scale.set(labelH * item.aspect, labelH, 1)
+    }
+    if (this.pendingMarker) {
+      this.pendingMarker.scale.setScalar(
+        this.worldPerPixel(this.pendingMarker.position) * (MARKER_PX + 3),
+      )
+    }
+  }
+
+  // ---------- section / clipping ----------
+
+  setSection(opts: SectionOptions | null) {
+    if (this.sectionHelper) {
+      this.scene.remove(this.sectionHelper)
+      this.sectionHelper.traverse((obj) => {
+        const o = obj as THREE.Mesh
+        o.geometry?.dispose()
+        ;(o.material as THREE.Material | undefined)?.dispose?.()
+      })
+      this.sectionHelper = null
+    }
+
+    let planes: THREE.Plane[] = []
+    if (opts) {
+      const axis = new THREE.Vector3(
+        opts.axis === 'x' ? 1 : 0,
+        opts.axis === 'y' ? 1 : 0,
+        opts.axis === 'z' ? 1 : 0,
+      )
+      if (opts.slice) {
+        // keep position ≤ coord ≤ position + thickness
+        planes = [
+          new THREE.Plane(axis.clone(), -opts.position),
+          new THREE.Plane(axis.clone().negate(), opts.position + opts.thickness),
+        ]
+      } else if (opts.flip) {
+        // keep coord ≥ position
+        planes = [new THREE.Plane(axis.clone(), -opts.position)]
+      } else {
+        // keep coord ≤ position
+        planes = [new THREE.Plane(axis.clone().negate(), opts.position)]
+      }
+      this.sectionHelper = this.buildSectionHelper(opts, axis)
+      if (this.sectionHelper) this.scene.add(this.sectionHelper)
+    }
+
+    for (const set of Object.values(this.materials)) {
+      for (const mat of [set.main, set.back]) {
+        mat.clippingPlanes = planes
+        mat.clipShadows = true
+      }
+      // show the interior while cut open (no stencil caps yet)
+      if (!(set.main instanceof THREE.MeshBasicMaterial)) {
+        set.main.side = opts ? THREE.DoubleSide : THREE.FrontSide
+        set.main.needsUpdate = true
+      }
+    }
+  }
+
+  /** Translucent gold quad showing where the cut plane sits. */
+  private buildSectionHelper(opts: SectionOptions, axis: THREE.Vector3): THREE.Object3D | null {
+    const box = this.partsBox()
+    if (box.isEmpty()) return null
+    const size = box.getSize(new THREE.Vector3())
+    const center = box.getCenter(new THREE.Vector3())
+    // after rotating +z onto the axis, the plane's local x/y land on:
+    const [lw, lh] = {
+      x: [size.z, size.y],
+      y: [size.x, size.z],
+      z: [size.x, size.y],
+    }[opts.axis]
+    const w = Math.max(lw, 1) * 1.15
+    const h = Math.max(lh, 1) * 1.15
+
+    const group = new THREE.Group()
+    const quad = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({
+        color: 0xc9a554,
+        transparent: true,
+        opacity: 0.1,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    )
+    const border = new THREE.LineSegments(
+      new THREE.EdgesGeometry(quad.geometry),
+      new THREE.LineBasicMaterial({ color: 0xc9a554, transparent: true, opacity: 0.5 }),
+    )
+    group.add(quad, border)
+
+    // PlaneGeometry faces +z with extents (x=w, y=h); orient its normal and
+    // in-plane axes to match the cut axis, then position at the cut.
+    group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), axis)
+    const pos = center.clone()
+    pos.setComponent('xyz'.indexOf(opts.axis), opts.position)
+    group.position.copy(pos)
+    return group
+  }
+
+  /** World-space bounds of all visible parts, or null when the scene is empty. */
+  getSceneBounds(): { min: Vec3; max: Vec3 } | null {
+    const box = this.partsBox()
+    if (box.isEmpty()) return null
+    return {
+      min: [box.min.x, box.min.y, box.min.z],
+      max: [box.max.x, box.max.y, box.max.z],
+    }
   }
 
   // ---------- display ----------
@@ -576,6 +866,7 @@ export class SceneManager {
     const outH = Math.round((width * h) / w)
 
     const hidden: THREE.Object3D[] = [this.grid, this.gizmoHelper, this.highlightGroup]
+    if (this.sectionHelper) hidden.push(this.sectionHelper)
     const prevVisible = hidden.map((o) => o.visible)
     hidden.forEach((o) => (o.visible = false))
     const prevPixelRatio = this.renderer.getPixelRatio()
@@ -612,6 +903,7 @@ export class SceneManager {
       if (t >= 1) this.tween = null
     }
     this.controls.update()
+    this.updateMeasureScales()
     this.renderScene()
   }
 
@@ -637,6 +929,8 @@ export class SceneManager {
     this.renderer.setAnimationLoop(null)
     this.resizeObserver.disconnect()
     this.clearHighlights()
+    this.clearMeasurements()
+    this.setSection(null)
     this.clearParts()
     this.composer?.dispose()
     this.controls.dispose()

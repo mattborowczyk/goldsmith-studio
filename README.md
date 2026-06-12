@@ -13,10 +13,10 @@ The full product plan lives in `docs/PLAN-PWA.md`.
 
 ## Status
 
-Foundation (build-order steps 1–2) is implemented:
+Build-order steps 1–4 are implemented:
 
 - **App shell** — viewport-first layout, dark studio theme with gold accent, workflow tab rail
-  (Import + Repair active, the rest are placeholders), glassy overlay panels.
+  (Import, Repair, Measure + Cost active, the rest are placeholders), glassy overlay panels.
 - **Viewer** — orbit/pan/zoom with inertial damping (touch: 1-finger orbit, 2-finger pan, pinch),
   view presets (Top/Front/Left/Right/Iso/Fit), perspective ↔ orthographic, display materials
   (polished gold/silver PBR, neutral studio, wireframe, normals & backface debug), configurable
@@ -31,6 +31,18 @@ Foundation (build-order steps 1–2) is implemented:
   before/after stats; non-destructive undo; split into shells. All geometry ops run in a Web
   Worker (Manifold WASM).
 - **Session autosave** — scene and display settings persist to IndexedDB and restore on reopen.
+- **Weight & Cost** (step 3) — editable material library (Au 24/22/18/14/10k in yellow/white/rose,
+  Ag 925/999, Pt 950, Pd 950, brass, bronze, resin, wax + custom materials); per-part material
+  assignment with live volume → weight → cost (casting loss factor %, currency selector);
+  "Refresh from market" spot prices (gold-api.com + ECB FX via frankfurter.dev, straight from the
+  browser, graceful offline fallback to saved prices); shrinkage % helper (scales part before
+  export); calculation history with CSV export. All persisted in IndexedDB.
+- **Measure & Sections** (step 4) — point-to-point dimensions with vertex snapping, persistent
+  screen-sized labels, per-dimension color, undo/clear (dimensions survive reload); section view
+  per axis with position slider, flip, and thin-slab slice mode (translucent helper plane marks
+  the cut; interior shown double-sided — no stencil caps yet); bounding-box readout; ring
+  inner-diameter auto-detect; one-tap drafting view (orthographic front for dimensioned
+  screenshots).
 
 ## Stack
 
@@ -46,10 +58,13 @@ door open for the planned React Native shell (see plan §6).
 ```
 src/
   core/
-    engine/     SceneManager (Three.js renderer, cameras, gizmo, parts) + materials
-    geometry/   pure-TS analysis & repair + Manifold worker + client facade
+    engine/     SceneManager (Three.js renderer, cameras, gizmo, parts,
+                measurements, section clipping) + materials
+    geometry/   pure-TS analysis & repair + Manifold worker + client facade,
+                fast volume/area + ring inner-Ø estimate (measure.ts)
+    calc/       material library, weight/cost math, spot-price fetch
     io/         STL/OBJ/GLB importers
-    persist/    IndexedDB scene/settings autosave
+    persist/    IndexedDB scene/settings/materials/history autosave
     types.ts    shared types & presets
   app/studio.ts the controller wiring engine ⇄ store ⇄ persistence
   store/        zustand app state
@@ -72,4 +87,6 @@ Heal: it should go from *watertight NO, 4 boundary edges* to *watertight yes, 10
 ## Verification cross-checks (plan §8)
 
 - 10 mm cube: volume 1000 mm³, surface 600 mm² — covered by unit tests.
-- Weight math (e.g. 10 mm cube of 14k ≈ 13.05 g) arrives with the materials/cost milestone.
+- 10 mm cube of 14k yellow ≈ 13.05 g — covered by unit tests and verified live in the Cost tab.
+- Ring inner-Ø estimate: synthetic 16 mm-bore band detected at 16.00 mm; solid bodies correctly
+  report "no through-hole".

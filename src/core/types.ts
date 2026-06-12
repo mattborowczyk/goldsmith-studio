@@ -97,3 +97,31 @@ export interface HealResult {
   before: AnalysisReport
   after: AnalysisReport
 }
+
+// ---------- measurement & sections ----------
+
+export type Vec3 = [number, number, number]
+
+/** A persistent point-to-point dimension in the scene. */
+export interface Measurement {
+  id: string
+  a: Vec3
+  b: Vec3
+  /** mm, cached so the UI list never recomputes. */
+  distance: number
+  color: string
+}
+
+export type SectionAxis = 'x' | 'y' | 'z'
+
+export interface SectionOptions {
+  axis: SectionAxis
+  /** Cut position along the axis, mm (world). */
+  position: number
+  /** Keep the other half instead. */
+  flip: boolean
+  /** Slab mode: keep only a thin slice instead of a half-space. */
+  slice: boolean
+  /** Slab thickness in mm (slice mode). */
+  thickness: number
+}

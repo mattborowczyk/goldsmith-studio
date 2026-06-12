@@ -16,11 +16,11 @@ import { cn } from '@/lib/utils'
 const TABS: { id: WorkflowTab; label: string; icon: React.ElementType; enabled: boolean }[] = [
   { id: 'import', label: 'Import', icon: FolderInput, enabled: true },
   { id: 'repair', label: 'Repair', icon: Wrench, enabled: true },
-  { id: 'measure', label: 'Measure', icon: Ruler, enabled: false },
+  { id: 'measure', label: 'Measure', icon: Ruler, enabled: true },
   { id: 'build', label: 'Build', icon: Shapes, enabled: false },
   { id: 'resize', label: 'Resize', icon: Scaling, enabled: false },
   { id: 'fit', label: 'Fit', icon: Smile, enabled: false },
-  { id: 'cost', label: 'Cost', icon: Coins, enabled: false },
+  { id: 'cost', label: 'Cost', icon: Coins, enabled: true },
   { id: 'deliver', label: 'Deliver', icon: FileText, enabled: false },
   { id: 'all', label: 'All', icon: LayoutGrid, enabled: false },
 ]

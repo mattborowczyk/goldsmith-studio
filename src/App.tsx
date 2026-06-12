@@ -4,11 +4,15 @@ import { TabRail } from '@/components/TabRail'
 import { PartsPanel } from '@/components/PartsPanel'
 import { ImportPanel } from '@/components/panels/ImportPanel'
 import { RepairPanel } from '@/components/panels/RepairPanel'
+import { MeasurePanel } from '@/components/panels/MeasurePanel'
+import { CostPanel } from '@/components/panels/CostPanel'
 import { useAppStore } from '@/store/appStore'
 
 const TAB_TITLES: Record<string, string> = {
   import: 'Import',
   repair: 'Repair Center',
+  measure: 'Measure & Sections',
+  cost: 'Weight & Cost',
 }
 
 export default function App() {
@@ -27,6 +31,8 @@ export default function App() {
         </h2>
         {tab === 'import' && <ImportPanel />}
         {tab === 'repair' && <RepairPanel />}
+        {tab === 'measure' && <MeasurePanel />}
+        {tab === 'cost' && <CostPanel />}
       </aside>
     </div>
   )

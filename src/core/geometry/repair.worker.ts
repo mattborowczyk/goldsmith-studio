@@ -46,7 +46,7 @@ async function unionShells(mesh: MeshData): Promise<MeshData> {
   const solid = new Manifold(m)
   try {
     const parts = solid.decompose()
-    let result = parts.length <= 1 ? solid : parts.reduce((acc, p) => acc.add(p))
+    const result = parts.length <= 1 ? solid : parts.reduce((acc, p) => acc.add(p))
     const out = result.getMesh()
     return {
       positions: new Float32Array(out.vertProperties),

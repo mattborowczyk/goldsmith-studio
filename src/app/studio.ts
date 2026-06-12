@@ -1,10 +1,35 @@
 import { SceneManager } from '@/core/engine/SceneManager'
 import { importFile, scaleMeshData } from '@/core/io/importers'
 import { repairClient } from '@/core/geometry/repairClient'
-import { loadScene, loadSettings, saveScene, saveSettings, type SavedPart } from '@/core/persist/db'
-import type { DisplayMode, ImportUnit, MeshData } from '@/core/types'
+import {
+  addHistoryEntries,
+  clearHistoryStore,
+  deleteHistoryEntry,
+  kvGet,
+  kvSet,
+  loadHistory,
+  loadMaterials,
+  loadScene,
+  loadSettings,
+  saveMaterials,
+  saveScene,
+  saveSettings,
+  type SavedPart,
+} from '@/core/persist/db'
+import {
+  applySpotPrices,
+  costOf,
+  defaultMaterials,
+  historyToCSV,
+  weightGrams,
+  type HistoryEntry,
+  type Material,
+} from '@/core/calc/materials'
+import { fetchSpotPricesPerGram, type Currency } from '@/core/calc/spotPrices'
+import { estimateInnerDiameter, volumeAndArea } from '@/core/geometry/measure'
+import type { DisplayMode, ImportUnit, Measurement, MeshData, Vec3 } from '@/core/types'
 import { UNIT_TO_MM } from '@/core/types'
-import { useAppStore } from '@/store/appStore'
+import { useAppStore, type CostSettings, type SectionState } from '@/store/appStore'
 
 /**
  * Application controller: owns the SceneManager singleton and orchestrates
@@ -36,13 +61,16 @@ export function initEngine(container: HTMLElement): SceneManager {
   engine.on('partsChanged', () => {
     useAppStore.getState().setParts(engine!.listParts())
     scheduleAutosave()
+    if (useAppStore.getState().tab === 'cost') scheduleVolumeRecompute()
   })
   engine.on('selectionChanged', (id) => {
     useAppStore.getState().setSelected(id)
     updateRepairUndoFlag(id)
   })
+  engine.on('pointPicked', handlePointPicked)
 
   void restoreSession()
+  void initCostData()
   store.setParts(engine.listParts())
   return engine
 }
@@ -256,6 +284,7 @@ async function restoreSession() {
       engine.setPartVisible(p.id, p.visible)
     }
     if (parts.length) engine.fitToView()
+    await restoreMeasurements()
   } catch (err) {
     console.warn('Session restore failed', err)
   } finally {
@@ -302,4 +331,310 @@ function downloadDataURL(url: string, prefix: string) {
   a.href = url
   a.download = `${prefix}-${new Date().toISOString().slice(0, 19).replaceAll(':', '-')}.png`
   a.click()
+}
+
+// ---------- cost: materials, weight, history (plan §2.4) ----------
+
+const KV_COST_SETTINGS = 'costSettings'
+const KV_ASSIGNMENTS = 'partMaterials'
+const KV_MEASUREMENTS = 'measurements'
+const KV_MEASURE_COLOR = 'measureColor'
+
+async function initCostData() {
+  const store = useAppStore.getState()
+  try {
+    let materials = await loadMaterials()
+    if (materials.length === 0) {
+      materials = defaultMaterials()
+      await saveMaterials(materials)
+    } else {
+      // IndexedDB getAll returns key order — restore library order, customs last
+      const rank = new Map(defaultMaterials().map((m, i) => [m.id, i]))
+      materials.sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9))
+    }
+    const [settings, assignments, history, color] = await Promise.all([
+      kvGet<CostSettings>(KV_COST_SETTINGS),
+      kvGet<Record<string, string>>(KV_ASSIGNMENTS),
+      loadHistory(),
+      kvGet<string>(KV_MEASURE_COLOR),
+    ])
+    store.patchCost({
+      materials,
+      history,
+      ...(settings ? { settings } : {}),
+      ...(assignments ? { assignments } : {}),
+    })
+    if (color) store.patchMeasure({ color })
+  } catch (err) {
+    console.warn('Cost data init failed', err)
+  }
+}
+
+let volumeTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleVolumeRecompute() {
+  if (volumeTimer) clearTimeout(volumeTimer)
+  volumeTimer = setTimeout(recomputeVolumes, 300)
+}
+
+/** World-space volume per part — runs when the Cost tab needs fresh numbers. */
+export function recomputeVolumes() {
+  if (!engine) return
+  const volumes: Record<string, number> = {}
+  for (const info of engine.listParts()) {
+    const mesh = engine.getWorldMeshData(info.id)
+    if (mesh) volumes[info.id] = volumeAndArea(mesh).volume
+  }
+  useAppStore.getState().patchCost({ volumes })
+}
+
+export function setPartMaterial(partId: string, materialId: string) {
+  const store = useAppStore.getState()
+  const assignments = { ...store.cost.assignments }
+  if (materialId) assignments[partId] = materialId
+  else delete assignments[partId]
+  store.patchCost({ assignments })
+  void kvSet(KV_ASSIGNMENTS, assignments)
+}
+
+export function updateCostSettings(patch: Partial<CostSettings>) {
+  const store = useAppStore.getState()
+  const settings = { ...store.cost.settings, ...patch }
+  store.patchCost({ settings })
+  void kvSet(KV_COST_SETTINGS, settings)
+}
+
+export function updateMaterial(id: string, patch: Partial<Material>) {
+  const store = useAppStore.getState()
+  const materials = store.cost.materials.map((m) => (m.id === id ? { ...m, ...patch } : m))
+  store.patchCost({ materials })
+  void saveMaterials(materials)
+}
+
+export function addCustomMaterial() {
+  const store = useAppStore.getState()
+  const custom: Material = {
+    id: `custom-${Date.now()}`,
+    name: 'Custom material',
+    density: 10,
+    pricePerGram: 0,
+    color: '#9aa0a8',
+    builtin: false,
+  }
+  const materials = [...store.cost.materials, custom]
+  store.patchCost({ materials })
+  void saveMaterials(materials)
+}
+
+export function deleteMaterial(id: string) {
+  const store = useAppStore.getState()
+  const target = store.cost.materials.find((m) => m.id === id)
+  if (!target || target.builtin) return
+  const materials = store.cost.materials.filter((m) => m.id !== id)
+  const assignments = Object.fromEntries(
+    Object.entries(store.cost.assignments).filter(([, matId]) => matId !== id),
+  )
+  store.patchCost({ materials, assignments })
+  void saveMaterials(materials)
+  void kvSet(KV_ASSIGNMENTS, assignments)
+}
+
+/** Restore built-in densities/names; keeps custom materials and all prices at 0. */
+export function resetMaterialLibrary() {
+  const store = useAppStore.getState()
+  const custom = store.cost.materials.filter((m) => !m.builtin)
+  const materials = [...defaultMaterials(), ...custom]
+  store.patchCost({ materials })
+  void saveMaterials(materials)
+}
+
+export async function refreshMarketPrices(): Promise<void> {
+  const store = useAppStore.getState()
+  store.patchCost({ refreshing: true, error: null })
+  try {
+    const perGram = await fetchSpotPricesPerGram(store.cost.settings.currency)
+    const materials = applySpotPrices(useAppStore.getState().cost.materials, perGram)
+    useAppStore.getState().patchCost({ materials, refreshing: false })
+    await saveMaterials(materials)
+    updateCostSettings({ pricesUpdatedAt: new Date().toISOString() })
+  } catch (err) {
+    useAppStore.getState().patchCost({
+      refreshing: false,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
+}
+
+/** One history row per part that has a material assigned. */
+export async function saveCalculationToHistory(): Promise<void> {
+  const store = useAppStore.getState()
+  const { assignments, volumes, materials, settings } = store.cost
+  const entries: HistoryEntry[] = []
+  for (const part of store.parts) {
+    const material = materials.find((m) => m.id === assignments[part.id])
+    const volume = volumes[part.id]
+    if (!material || volume === undefined) continue
+    const weightG = weightGrams(volume, material.density)
+    entries.push({
+      id: `h-${Date.now()}-${part.id}`,
+      date: new Date().toISOString(),
+      model: part.name,
+      material: material.name,
+      volumeMm3: volume,
+      weightG,
+      cost: costOf(weightG, material.pricePerGram, settings.lossFactorPct),
+      currency: settings.currency,
+    })
+  }
+  if (!entries.length) return
+  await addHistoryEntries(entries)
+  store.patchCost({ history: await loadHistory() })
+}
+
+export async function removeHistoryEntry(id: string): Promise<void> {
+  await deleteHistoryEntry(id)
+  useAppStore.getState().patchCost({ history: await loadHistory() })
+}
+
+export async function clearHistoryLog(): Promise<void> {
+  await clearHistoryStore()
+  useAppStore.getState().patchCost({ history: [] })
+}
+
+export function exportHistoryCSV() {
+  const csv = historyToCSV(useAppStore.getState().cost.history)
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `goldsmith-history-${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/** Casting shrinkage helper: scale the selected part up by `pct` %. */
+export function applyShrinkage(pct: number) {
+  const id = requireSelection()
+  if (!id || !(pct > -100)) return
+  getEngine().applyScale(id, 1 + pct / 100)
+}
+
+export function formatMoney(value: number, currency: Currency): string {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency,
+    maximumFractionDigits: 2,
+  }).format(value)
+}
+
+// ---------- measurements & sections (plan §2.3) ----------
+
+function handlePointPicked(point: Vec3) {
+  const store = useAppStore.getState()
+  const pending = store.measure.pendingPoint
+  if (!pending) {
+    store.patchMeasure({ pendingPoint: point })
+    engine?.setPendingMarker(point)
+    return
+  }
+  const distance = Math.hypot(point[0] - pending[0], point[1] - pending[1], point[2] - pending[2])
+  const m: Measurement = {
+    id: `m-${Date.now()}`,
+    a: pending,
+    b: point,
+    distance,
+    color: store.measure.color,
+  }
+  engine?.setPendingMarker(null)
+  engine?.addMeasurement(m)
+  const measurements = [...store.measure.measurements, m]
+  store.patchMeasure({ pendingPoint: null, measurements })
+  void kvSet(KV_MEASUREMENTS, measurements)
+}
+
+export function setMeasurePicking(on: boolean) {
+  const store = useAppStore.getState()
+  const eng = getEngine()
+  eng.setPickMode(on)
+  // park the gizmo while picking so taps near it don't grab a handle
+  eng.setGizmoMode(on ? 'none' : store.gizmoMode)
+  store.patchMeasure({ picking: on, pendingPoint: null })
+}
+
+export function setMeasureColor(color: string) {
+  useAppStore.getState().patchMeasure({ color })
+  void kvSet(KV_MEASURE_COLOR, color)
+}
+
+export function removeMeasurementById(id: string) {
+  const store = useAppStore.getState()
+  getEngine().removeMeasurement(id)
+  const measurements = store.measure.measurements.filter((m) => m.id !== id)
+  store.patchMeasure({ measurements })
+  void kvSet(KV_MEASUREMENTS, measurements)
+}
+
+export function undoLastMeasurement() {
+  const last = useAppStore.getState().measure.measurements.at(-1)
+  if (last) removeMeasurementById(last.id)
+}
+
+export function clearAllMeasurements() {
+  getEngine().clearMeasurements()
+  useAppStore.getState().patchMeasure({ measurements: [], pendingPoint: null })
+  void kvSet(KV_MEASUREMENTS, [])
+}
+
+async function restoreMeasurements() {
+  const saved = await kvGet<Measurement[]>(KV_MEASUREMENTS)
+  if (!saved?.length || !engine) return
+  for (const m of saved) engine.addMeasurement(m)
+  useAppStore.getState().patchMeasure({ measurements: saved })
+}
+
+/** Patch section state, refit the slider range on enable/axis change, apply. */
+export function updateSection(patch: Partial<SectionState>) {
+  const store = useAppStore.getState()
+  const prev = store.measure.section
+  const next = { ...prev, ...patch }
+  const axisChanged = next.axis !== prev.axis
+  const justEnabled = next.enabled && !prev.enabled
+  if (justEnabled || axisChanged) {
+    const bounds = getEngine().getSceneBounds()
+    if (bounds) {
+      const i = 'xyz'.indexOf(next.axis)
+      next.range = { min: bounds.min[i], max: bounds.max[i] }
+      next.position = (next.range.min + next.range.max) / 2
+    }
+  }
+  store.patchSection(next)
+  getEngine().setSection(
+    next.enabled
+      ? {
+          axis: next.axis,
+          position: next.position,
+          flip: next.flip,
+          slice: next.slice,
+          thickness: next.thickness,
+        }
+      : null,
+  )
+}
+
+/** Drafting mode: orthographic side view, ready for a dimensioned snapshot. */
+export function draftingView() {
+  const eng = getEngine()
+  eng.setProjection('orthographic')
+  useAppStore.getState().setProjection('orthographic')
+  eng.setViewPreset('front')
+  eng.setTurntable(false)
+  useAppStore.getState().setTurntable(false)
+}
+
+export function detectInnerDiameter() {
+  const id = requireSelection()
+  if (!id) return
+  const mesh = getEngine().getWorldMeshData(id)
+  if (!mesh) return
+  const est = estimateInnerDiameter(mesh)
+  useAppStore.getState().patchMeasure({ innerDiameter: est ?? 'none' })
 }
