@@ -13,17 +13,22 @@ export function createMaterials(): Record<DisplayMode, DisplayMaterialSet> {
     side: THREE.BackSide,
   })
 
+  // Measured-ish metal albedos; RoomEnvironment provides realistic reflections
   const gold = new THREE.MeshPhysicalMaterial({
-    color: 0xffc24d,
-    metalness: 1,
-    roughness: 0.18,
-    envMapIntensity: 1.1,
+    color: 0xffd17a, // More accurate gold color
+    metalness: 1.0,
+    roughness: 0.12,
+    clearcoat: 0.3,
+    clearcoatRoughness: 0.05,
+    envMapIntensity: 1.5,
   })
   const silver = new THREE.MeshPhysicalMaterial({
-    color: 0xd9dade,
-    metalness: 1,
-    roughness: 0.15,
-    envMapIntensity: 1.0,
+    color: 0xffffff, // Silver is highly reflective white
+    metalness: 1.0,
+    roughness: 0.10,
+    clearcoat: 0.3,
+    clearcoatRoughness: 0.05,
+    envMapIntensity: 1.5,
   })
   const studio = new THREE.MeshStandardMaterial({
     color: 0x9aa0a8,

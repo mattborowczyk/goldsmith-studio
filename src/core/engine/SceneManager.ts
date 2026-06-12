@@ -1,7 +1,17 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
+import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import {
+  BloomEffect,
+  EffectComposer,
+  EffectPass,
+  RenderPass,
+  SMAAEffect,
+  ToneMappingEffect,
+  ToneMappingMode,
+} from 'postprocessing'
+import { N8AOPostPass } from 'n8ao'
 import type {
   AnalysisReport,
   DisplayMode,
@@ -12,13 +22,16 @@ import type {
   ViewPreset,
 } from '../types'
 import { createMaterials, type DisplayMaterialSet } from './materials'
+import { createBackgroundTexture, createStudioEnvironment } from './environment'
 
 interface ScenePart {
   id: string
   name: string
   mesh: THREE.Mesh
   backMesh: THREE.Mesh
-  baseGeometry: THREE.BufferGeometry
+  /** Source-of-truth geometry for repair/export/persistence. */
+  data: MeshData
+  displayGeometry: THREE.BufferGeometry
 }
 
 export interface SceneManagerEvents {
@@ -28,12 +41,8 @@ export interface SceneManagerEvents {
   selectionChanged: (id: string | null) => void
 }
 
-const BACKGROUNDS: Record<string, number> = {
-  studio: 0x232220,
-  charcoal: 0x1a1a1c,
-  slate: 0x20242b,
-  black: 0x000000,
-}
+/** Crease angle: edges sharper than this stay hard instead of being smoothed. */
+const CREASE_ANGLE = THREE.MathUtils.degToRad(38)
 
 /**
  * Imperative Three.js engine. Owns renderer, cameras, controls, gizmo, parts.
@@ -43,11 +52,14 @@ const BACKGROUNDS: Record<string, number> = {
 export class SceneManager {
   readonly scene = new THREE.Scene()
   private renderer: THREE.WebGLRenderer
+  private composer: EffectComposer | null = null
+  private postEnabled = true
   private perspCamera: THREE.PerspectiveCamera
   private orthoCamera: THREE.OrthographicCamera
   private activeCamera: THREE.Camera
   private controls: OrbitControls
   private gizmo: TransformControls
+  private gizmoHelper: THREE.Object3D
   private container: HTMLElement
   private resizeObserver: ResizeObserver
   private materials: Record<DisplayMode, DisplayMaterialSet>
@@ -56,7 +68,10 @@ export class SceneManager {
   private partOrder: string[] = []
   private selectedId: string | null = null
   private grid: THREE.GridHelper
+  private keyLight: THREE.DirectionalLight
+  private shadowCatcher: THREE.Mesh
   private highlightGroup = new THREE.Group()
+  private backgroundTexture: THREE.Texture | null = null
   private listeners: { [K in keyof SceneManagerEvents]: Set<SceneManagerEvents[K]> } = {
     partsChanged: new Set(),
     selectionChanged: new Set(),
@@ -79,16 +94,19 @@ export class SceneManager {
     const w = container.clientWidth || 1
     const h = container.clientHeight || 1
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true })
+    // antialias off — SMAA in the post stack covers it (and MSAA breaks with
+    // the HalfFloat composer buffers anyway)
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, stencil: false })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.setSize(w, h)
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.0
+    // tone mapping happens in the post stack; keep it for the no-FX fallback
+    this.renderer.toneMapping = THREE.NoToneMapping
+    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     container.appendChild(this.renderer.domElement)
 
-    this.scene.background = new THREE.Color(BACKGROUNDS.studio)
-    const pmrem = new THREE.PMREMGenerator(this.renderer)
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+    this.scene.environment = createStudioEnvironment(this.renderer)
+    this.setBackground('studio')
 
     this.perspCamera = new THREE.PerspectiveCamera(45, w / h, 0.1, 5000)
     this.perspCamera.position.set(40, 30, 40)
@@ -110,18 +128,36 @@ export class SceneManager {
       this.controls.enabled = !(e as unknown as { value: boolean }).value
       if (!(e as unknown as { value: boolean }).value) this.emit('partsChanged')
     })
-    this.scene.add(this.gizmo.getHelper())
+    this.gizmoHelper = this.gizmo.getHelper()
+    this.scene.add(this.gizmoHelper)
 
     this.grid = new THREE.GridHelper(100, 50, 0x4a4640, 0x2e2c28)
     this.scene.add(this.grid)
     this.scene.add(this.highlightGroup)
 
-    // soft key light so studio (non-PBR-env) materials read well too
-    const key = new THREE.DirectionalLight(0xffffff, 1.2)
-    key.position.set(50, 80, 30)
-    this.scene.add(key, new THREE.AmbientLight(0xffffff, 0.25))
+    // Key light exists mostly to cast the soft ground shadow; the softbox
+    // environment provides the actual illumination.
+    this.keyLight = new THREE.DirectionalLight(0xfff3e0, 1.5)
+    this.keyLight.position.set(30, 55, 20)
+    this.keyLight.castShadow = true
+    this.keyLight.shadow.mapSize.set(2048, 2048)
+    this.keyLight.shadow.bias = -0.0004
+    this.keyLight.shadow.normalBias = 0.03
+    this.keyLight.shadow.radius = 8
+    this.scene.add(this.keyLight, this.keyLight.target)
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.05))
+
+    this.shadowCatcher = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.ShadowMaterial({ opacity: 0.32 }),
+    )
+    this.shadowCatcher.rotation.x = -Math.PI / 2
+    this.shadowCatcher.receiveShadow = true
+    this.shadowCatcher.visible = false
+    this.scene.add(this.shadowCatcher)
 
     this.materials = createMaterials()
+    this.buildComposer()
 
     this.resizeObserver = new ResizeObserver(() => this.handleResize())
     this.resizeObserver.observe(container)
@@ -137,6 +173,45 @@ export class SceneManager {
     })
 
     this.renderer.setAnimationLoop(() => this.renderFrame())
+  }
+
+  // ---------- post-processing ----------
+
+  private buildComposer() {
+    this.composer?.dispose()
+    const w = this.container.clientWidth || 1
+    const h = this.container.clientHeight || 1
+    this.composer = new EffectComposer(this.renderer, {
+      frameBufferType: THREE.HalfFloatType,
+    })
+    this.composer.addPass(new RenderPass(this.scene, this.activeCamera))
+
+    const n8ao = new N8AOPostPass(this.scene, this.activeCamera, w, h)
+    n8ao.configuration.aoRadius = 2.5
+    n8ao.configuration.distanceFalloff = 4.0
+    n8ao.configuration.intensity = 4.0
+    n8ao.setQualityMode('High')
+    this.composer.addPass(n8ao)
+
+    const bloom = new BloomEffect({
+      luminanceThreshold: 1.0,
+      luminanceSmoothing: 0.6,
+      intensity: 0.5,
+      mipmapBlur: true,
+    })
+    const toneMapping = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC })
+    this.composer.addPass(new EffectPass(this.activeCamera, bloom, new SMAAEffect(), toneMapping))
+    this.composer.setSize(w, h)
+  }
+
+  setPostFX(enabled: boolean) {
+    this.postEnabled = enabled
+    // fallback path needs renderer-side tone mapping
+    this.renderer.toneMapping = enabled ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping
+  }
+
+  getPostFX(): boolean {
+    return this.postEnabled
   }
 
   // ---------- events ----------
@@ -155,25 +230,34 @@ export class SceneManager {
   // ---------- parts ----------
 
   addPart(id: string, name: string, data: MeshData, matrix?: number[]): PartInfo {
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3))
-    geometry.setIndex(new THREE.BufferAttribute(data.indices, 1))
-    geometry.computeVertexNormals()
-    geometry.computeBoundingBox()
-
+    const displayGeometry = this.buildDisplayGeometry(data)
     const set = this.materials[this.displayMode]
-    const mesh = new THREE.Mesh(geometry, set.main)
-    const backMesh = new THREE.Mesh(geometry, set.back)
+    const mesh = new THREE.Mesh(displayGeometry, set.main)
+    mesh.castShadow = true
+    const backMesh = new THREE.Mesh(displayGeometry, set.back)
     backMesh.visible = this.displayMode === 'backface'
     mesh.add(backMesh)
     mesh.userData.partId = id
     if (matrix) mesh.applyMatrix4(new THREE.Matrix4().fromArray(matrix))
     this.scene.add(mesh)
 
-    this.parts.set(id, { id, name, mesh, backMesh, baseGeometry: geometry })
+    this.parts.set(id, { id, name, mesh, backMesh, data, displayGeometry })
     this.partOrder.push(id)
+    this.updateShadowRig()
     this.emit('partsChanged')
     return this.partInfo(id)!
+  }
+
+  private buildDisplayGeometry(data: MeshData): THREE.BufferGeometry {
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(data.positions.slice(), 3))
+    geometry.setIndex(new THREE.BufferAttribute(data.indices.slice(), 1))
+    // hard edges stay hard, curved regions stay smooth
+    const creased = toCreasedNormals(geometry, CREASE_ANGLE)
+    geometry.dispose()
+    creased.computeBoundingBox()
+    creased.computeBoundingSphere()
+    return creased
   }
 
   removePart(id: string) {
@@ -181,9 +265,10 @@ export class SceneManager {
     if (!part) return
     if (this.selectedId === id) this.select(null)
     this.scene.remove(part.mesh)
-    part.baseGeometry.dispose()
+    part.displayGeometry.dispose()
     this.parts.delete(id)
     this.partOrder = this.partOrder.filter((p) => p !== id)
+    this.updateShadowRig()
     this.emit('partsChanged')
   }
 
@@ -203,22 +288,7 @@ export class SceneManager {
     if (!part) return
     part.mesh.visible = visible
     if (this.selectedId === id && !visible) this.select(null)
-    this.emit('partsChanged')
-  }
-
-  /** Replace a part's geometry in place (e.g. after heal) — transform kept. */
-  replacePartGeometry(id: string, data: MeshData) {
-    const part = this.parts.get(id)
-    if (!part) return
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3))
-    geometry.setIndex(new THREE.BufferAttribute(data.indices, 1))
-    geometry.computeVertexNormals()
-    geometry.computeBoundingBox()
-    part.baseGeometry.dispose()
-    part.baseGeometry = geometry
-    part.mesh.geometry = geometry
-    part.backMesh.geometry = geometry
+    this.updateShadowRig()
     this.emit('partsChanged')
   }
 
@@ -235,7 +305,7 @@ export class SceneManager {
       id,
       name: part.name,
       visible: part.mesh.visible,
-      triangles: (part.baseGeometry.index?.count ?? 0) / 3,
+      triangles: part.data.indices.length / 3,
       bbox: { x: size.x, y: size.y, z: size.z },
     }
   }
@@ -245,28 +315,26 @@ export class SceneManager {
     const part = this.parts.get(id)
     if (!part) return null
     part.mesh.updateWorldMatrix(true, false)
-    const src = part.baseGeometry.getAttribute('position') as THREE.BufferAttribute
-    const positions = new Float32Array(src.count * 3)
+    const src = part.data.positions
+    const positions = new Float32Array(src.length)
     const v = new THREE.Vector3()
-    for (let i = 0; i < src.count; i++) {
-      v.fromBufferAttribute(src, i).applyMatrix4(part.mesh.matrixWorld)
-      positions[i * 3] = v.x
-      positions[i * 3 + 1] = v.y
-      positions[i * 3 + 2] = v.z
+    for (let i = 0; i < src.length; i += 3) {
+      v.set(src[i], src[i + 1], src[i + 2]).applyMatrix4(part.mesh.matrixWorld)
+      positions[i] = v.x
+      positions[i + 1] = v.y
+      positions[i + 2] = v.z
     }
-    const indices = new Uint32Array((part.baseGeometry.index as THREE.BufferAttribute).array)
-    return { positions, indices }
+    return { positions, indices: part.data.indices.slice() }
   }
 
   /** Local-space mesh data + transform matrix, for persistence. */
   getPartForSave(id: string): { data: MeshData; matrix: number[]; name: string; visible: boolean } | null {
     const part = this.parts.get(id)
     if (!part) return null
-    const pos = part.baseGeometry.getAttribute('position') as THREE.BufferAttribute
     return {
       data: {
-        positions: new Float32Array(pos.array),
-        indices: new Uint32Array((part.baseGeometry.index as THREE.BufferAttribute).array),
+        positions: part.data.positions.slice(),
+        indices: part.data.indices.slice(),
       },
       matrix: part.mesh.matrix.toArray(),
       name: part.name,
@@ -278,6 +346,7 @@ export class SceneManager {
     const part = this.parts.get(id)
     if (!part || factor <= 0) return
     part.mesh.scale.multiplyScalar(factor)
+    this.updateShadowRig()
     this.emit('partsChanged')
   }
 
@@ -298,9 +367,6 @@ export class SceneManager {
   setGizmoMode(mode: GizmoMode) {
     if (mode === 'none') {
       this.gizmo.detach()
-      if (this.selectedId) {
-        // keep selection, hide gizmo
-      }
       return
     }
     this.gizmo.setMode(mode)
@@ -332,8 +398,9 @@ export class SceneManager {
   }
 
   setBackground(name: string) {
-    const color = BACKGROUNDS[name] ?? BACKGROUNDS.studio
-    this.scene.background = new THREE.Color(color)
+    this.backgroundTexture?.dispose()
+    this.backgroundTexture = createBackgroundTexture(name)
+    this.scene.background = this.backgroundTexture
   }
 
   setGridVisible(visible: boolean) {
@@ -348,6 +415,32 @@ export class SceneManager {
 
   isTurntable(): boolean {
     return this.turntable
+  }
+
+  /** Fit the shadow light + catcher plane to the current scene contents. */
+  private updateShadowRig() {
+    const box = this.partsBox()
+    if (box.isEmpty()) {
+      this.shadowCatcher.visible = false
+      return
+    }
+    const center = box.getCenter(new THREE.Vector3())
+    const radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1)
+
+    this.shadowCatcher.visible = true
+    this.shadowCatcher.scale.setScalar(radius * 12)
+    this.shadowCatcher.position.set(center.x, box.min.y - 0.02, center.z)
+
+    this.keyLight.position.copy(center).add(new THREE.Vector3(0.6, 1.6, 0.45).multiplyScalar(radius * 2.2))
+    this.keyLight.target.position.copy(center)
+    const cam = this.keyLight.shadow.camera
+    cam.left = -radius * 1.8
+    cam.right = radius * 1.8
+    cam.top = radius * 1.8
+    cam.bottom = -radius * 1.8
+    cam.near = 0.1
+    cam.far = radius * 8
+    cam.updateProjectionMatrix()
   }
 
   // ---------- analysis highlights ----------
@@ -406,6 +499,7 @@ export class SceneManager {
     this.controls.object = to
     this.gizmo.camera = to
     this.controls.update()
+    this.buildComposer()
   }
 
   getProjection(): Projection {
@@ -465,12 +559,46 @@ export class SceneManager {
     }
   }
 
+  /** Quick capture of the viewport as the user sees it. */
   snapshotPNG(): string {
-    this.renderer.render(this.scene, this.activeCamera)
+    this.renderScene()
     return this.renderer.domElement.toDataURL('image/png')
   }
 
+  /**
+   * Clean high-resolution client render: helpers hidden, full post stack,
+   * rendered at `width` px regardless of viewport size.
+   */
+  renderPreviewPNG(width = 2048): string {
+    const w = this.container.clientWidth || 1
+    const h = this.container.clientHeight || 1
+    const outW = width
+    const outH = Math.round((width * h) / w)
+
+    const hidden: THREE.Object3D[] = [this.grid, this.gizmoHelper, this.highlightGroup]
+    const prevVisible = hidden.map((o) => o.visible)
+    hidden.forEach((o) => (o.visible = false))
+    const prevPixelRatio = this.renderer.getPixelRatio()
+
+    this.renderer.setPixelRatio(1)
+    this.renderer.setSize(outW, outH, false)
+    this.composer?.setSize(outW, outH, false)
+    this.renderScene()
+    const url = this.renderer.domElement.toDataURL('image/png')
+
+    this.renderer.setPixelRatio(prevPixelRatio)
+    this.renderer.setSize(w, h)
+    this.composer?.setSize(w, h)
+    hidden.forEach((o, i) => (o.visible = prevVisible[i]))
+    return url
+  }
+
   // ---------- loop & lifecycle ----------
+
+  private renderScene() {
+    if (this.postEnabled && this.composer) this.composer.render()
+    else this.renderer.render(this.scene, this.activeCamera)
+  }
 
   private renderFrame() {
     if (this.disposed) return
@@ -484,7 +612,7 @@ export class SceneManager {
       if (t >= 1) this.tween = null
     }
     this.controls.update()
-    this.renderer.render(this.scene, this.activeCamera)
+    this.renderScene()
   }
 
   private aspect(): number {
@@ -495,6 +623,7 @@ export class SceneManager {
     const w = this.container.clientWidth || 1
     const h = this.container.clientHeight || 1
     this.renderer.setSize(w, h)
+    this.composer?.setSize(w, h)
     this.perspCamera.aspect = w / h
     this.perspCamera.updateProjectionMatrix()
     const halfH = this.orthoCamera.top
@@ -509,8 +638,10 @@ export class SceneManager {
     this.resizeObserver.disconnect()
     this.clearHighlights()
     this.clearParts()
+    this.composer?.dispose()
     this.controls.dispose()
     this.gizmo.dispose()
+    this.backgroundTexture?.dispose()
     this.renderer.dispose()
     this.renderer.domElement.remove()
   }

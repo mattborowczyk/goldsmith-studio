@@ -30,6 +30,7 @@ interface AppState {
   gridVisible: boolean
   background: string
   turntable: boolean
+  postFX: boolean
   importing: boolean
   importError: string | null
   restoring: boolean
@@ -44,6 +45,7 @@ interface AppState {
   setGridVisible: (v: boolean) => void
   setBackground: (b: string) => void
   setTurntable: (v: boolean) => void
+  setPostFX: (v: boolean) => void
   setImporting: (v: boolean, error?: string | null) => void
   setRestoring: (v: boolean) => void
   patchRepair: (patch: Partial<RepairState>) => void
@@ -59,6 +61,7 @@ export const useAppStore = create<AppState>((set) => ({
   gridVisible: true,
   background: 'studio',
   turntable: false,
+  postFX: true,
   importing: false,
   importError: null,
   restoring: true,
@@ -80,6 +83,7 @@ export const useAppStore = create<AppState>((set) => ({
   setGridVisible: (gridVisible) => set({ gridVisible }),
   setBackground: (background) => set({ background }),
   setTurntable: (turntable) => set({ turntable }),
+  setPostFX: (postFX) => set({ postFX }),
   setImporting: (importing, importError = null) => set({ importing, importError }),
   setRestoring: (restoring) => set({ restoring }),
   patchRepair: (patch) => set((s) => ({ repair: { ...s.repair, ...patch } })),

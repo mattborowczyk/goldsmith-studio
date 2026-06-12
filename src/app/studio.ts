@@ -26,6 +26,11 @@ export function getEngine(): SceneManager {
 export function initEngine(container: HTMLElement): SceneManager {
   if (engine) return engine
   engine = new SceneManager(container)
+  if (import.meta.env.DEV) {
+    const w = window as unknown as Record<string, unknown>
+    w.__engine = engine
+    void import('three').then((three) => (w.__THREE = three))
+  }
   const store = useAppStore.getState()
 
   engine.on('partsChanged', () => {
@@ -279,9 +284,22 @@ export function setGridVisible(visible: boolean) {
 }
 
 export function downloadSnapshot() {
-  const url = getEngine().snapshotPNG()
+  downloadDataURL(getEngine().snapshotPNG(), 'goldsmith-snapshot')
+}
+
+/** High-res clean render for client previews (helpers hidden, full post FX). */
+export function downloadClientPreview() {
+  downloadDataURL(getEngine().renderPreviewPNG(2048), 'goldsmith-preview')
+}
+
+export function setPostFX(enabled: boolean) {
+  getEngine().setPostFX(enabled)
+  useAppStore.getState().setPostFX(enabled)
+}
+
+function downloadDataURL(url: string, prefix: string) {
   const a = document.createElement('a')
   a.href = url
-  a.download = `goldsmith-snapshot-${new Date().toISOString().slice(0, 19).replaceAll(':', '-')}.png`
+  a.download = `${prefix}-${new Date().toISOString().slice(0, 19).replaceAll(':', '-')}.png`
   a.click()
 }

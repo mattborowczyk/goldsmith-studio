@@ -1,18 +1,22 @@
 import {
   Camera,
   Grid3X3,
+  ImageDown,
   Maximize,
   Move3D,
   Rotate3D,
   RotateCw,
   Scale3D,
+  Sparkles,
 } from 'lucide-react'
 import {
+  downloadClientPreview,
   downloadSnapshot,
   getEngine,
   setBackground,
   setDisplayMode,
   setGridVisible,
+  setPostFX,
 } from '@/app/studio'
 import type { DisplayMode, GizmoMode, ViewPreset } from '@/core/types'
 import { useAppStore } from '@/store/appStore'
@@ -54,6 +58,7 @@ export function TopBar() {
   const setTurntable = useAppStore((s) => s.setTurntable)
   const background = useAppStore((s) => s.background)
   const selectedId = useAppStore((s) => s.selectedId)
+  const postFX = useAppStore((s) => s.postFX)
 
   return (
     <header className="absolute inset-x-0 top-0 z-30 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2">
@@ -154,8 +159,25 @@ export function TopBar() {
           >
             <RotateCw />
           </Button>
+          <Button
+            variant="ghost"
+            size="iconSm"
+            title="Render quality (AO + bloom)"
+            className={cn(postFX && 'bg-accent text-accent-foreground')}
+            onClick={() => setPostFX(!postFX)}
+          >
+            <Sparkles />
+          </Button>
           <Button variant="ghost" size="iconSm" title="Snapshot PNG" onClick={downloadSnapshot}>
             <Camera />
+          </Button>
+          <Button
+            variant="ghost"
+            size="iconSm"
+            title="Client preview render (high-res PNG, helpers hidden)"
+            onClick={downloadClientPreview}
+          >
+            <ImageDown />
           </Button>
         </div>
       </div>
