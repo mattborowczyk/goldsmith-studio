@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "goldsmith-studio",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev", "--port", "5183"],
+      "port": 5183
+    }
+  ]
+}

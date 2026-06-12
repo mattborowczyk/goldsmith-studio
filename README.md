@@ -1,0 +1,75 @@
+# GoldSmith Studio
+
+A professional 3D assistant for bench jewellers, grillz makers and CAD designers. It complements
+sculpting apps (Nomad Sculpt, Blender, Rhino): users sculpt elsewhere, this app handles
+measurement, validation, repair, parametric generation, weight/cost calculation, grillz fitting
+prep, and client deliverables.
+
+**Hard constraints:** no AI features, no backend, no recurring costs. Everything runs client-side
+in the browser; all data stays on-device (IndexedDB + file export). Offline-capable PWA targeting
+iPad (Safari) first, desktop and Android second.
+
+The full product plan lives in `docs/PLAN-PWA.md`.
+
+## Status
+
+Foundation (build-order steps 1–2) is implemented:
+
+- **App shell** — viewport-first layout, dark studio theme with gold accent, workflow tab rail
+  (Import + Repair active, the rest are placeholders), glassy overlay panels.
+- **Viewer** — orbit/pan/zoom with inertial damping (touch: 1-finger orbit, 2-finger pan, pinch),
+  view presets (Top/Front/Left/Right/Iso/Fit), perspective ↔ orthographic, display materials
+  (polished gold/silver PBR, neutral studio, wireframe, normals & backface debug), configurable
+  background + grid, turntable mode, PNG snapshot.
+- **Import** — STL (binary+ASCII), OBJ, GLB/GLTF; drag & drop or file picker; unit interpretation
+  (mm/cm/m/in); percentage rescale with live bounding-box readout; append or replace; parts tree
+  with show/hide, select, rename, delete; move/rotate/scale transform gizmo.
+- **Repair Center** — analysis report (triangles, shells, boundary edges/hole loops, non-manifold
+  edges, inverted shells, watertight, volume, surface area) with problem areas highlighted in the
+  viewport (red hole edges, blue flipped faces); heal (vertex weld, degenerate cleanup, winding
+  fix, hole fill, small-shell filter, Manifold boolean union) with Safe/Aggressive/Custom modes;
+  before/after stats; non-destructive undo; split into shells. All geometry ops run in a Web
+  Worker (Manifold WASM).
+- **Session autosave** — scene and display settings persist to IndexedDB and restore on reopen.
+
+## Stack
+
+TypeScript · React 19 · Vite · Three.js (imperative engine, **not** react-three-fiber) ·
+Manifold WASM · Zustand · Tailwind CSS v4 + Radix primitives · idb · Vitest.
+
+### Architecture rule
+
+`src/core/` is UI-framework-agnostic: geometry, analysis, IO and persistence never import React,
+and Three.js usage is confined to `core/engine` + `core/io` behind small facades. This keeps the
+door open for the planned React Native shell (see plan §6).
+
+```
+src/
+  core/
+    engine/     SceneManager (Three.js renderer, cameras, gizmo, parts) + materials
+    geometry/   pure-TS analysis & repair + Manifold worker + client facade
+    io/         STL/OBJ/GLB importers
+    persist/    IndexedDB scene/settings autosave
+    types.ts    shared types & presets
+  app/studio.ts the controller wiring engine ⇄ store ⇄ persistence
+  store/        zustand app state
+  components/   React UI (viewport host, top bar, tab rail, panels)
+```
+
+## Development
+
+```sh
+pnpm install
+pnpm dev          # dev server
+pnpm exec vitest  # geometry unit tests
+pnpm build        # production build (tsc + vite)
+```
+
+`scripts/make-test-stl.mjs` regenerates the broken/clean cube fixtures in `public/test/` used for
+manual testing (drop `public/test/broken-cube.stl` into the viewport, then Repair → Analyze →
+Heal: it should go from *watertight NO, 4 boundary edges* to *watertight yes, 1000.13 mm³*).
+
+## Verification cross-checks (plan §8)
+
+- 10 mm cube: volume 1000 mm³, surface 600 mm² — covered by unit tests.
+- Weight math (e.g. 10 mm cube of 14k ≈ 13.05 g) arrives with the materials/cost milestone.
