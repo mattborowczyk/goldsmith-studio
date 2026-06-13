@@ -72,6 +72,8 @@ export interface MeasureState {
 
 export interface ResizeState {
   mode: ResizeMode
+  /** Part the detected frame belongs to — apply/undo must match it. */
+  sourcePartId: string | null
   /** Target size input. */
   targetSystem: SizeSystem
   targetSize: number
@@ -183,6 +185,7 @@ export const useAppStore = create<AppState>((set) => ({
   },
   resize: {
     mode: 'uniform',
+    sourcePartId: null,
     targetSystem: 'US',
     targetSize: 7,
     targetDiameter: 17.35, // US 7

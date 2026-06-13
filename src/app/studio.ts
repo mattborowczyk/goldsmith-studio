@@ -37,6 +37,7 @@ import type {
   PartAppearance,
   ResizeMode,
   ResizeOverlay,
+  RingFrame,
   Vec3,
 } from '@/core/types'
 import { HEAL_PRESETS, UNIT_TO_MM } from '@/core/types'
@@ -719,18 +720,20 @@ function refreshResizeOverlay() {
   engine.setResizeOverlay(overlay)
 }
 
-/** Auto-detect the ring frame + current inner size of the selected part. */
-export function detectResizeFrame() {
-  const id = resizeTargetPart()
-  if (!id) return
+/**
+ * Analyze a specific part's ring frame + current inner size and bind the resize
+ * state to it (sourcePartId). Returns the frame, or null when it isn't a ring.
+ */
+function detectResizeFrameFor(id: string): RingFrame | null {
   const mesh = getEngine().getWorldMeshData(id)
-  if (!mesh) return
-  const frame = analyzeRingFrame(mesh)
   const store = useAppStore.getState()
-  if (!frame) {
-    store.patchResize({ detected: 'none', frame: null, currentDiameter: null, error: null })
+  const frame = mesh ? analyzeRingFrame(mesh) : null
+  if (!mesh || !frame) {
+    store.patchResize({
+      detected: 'none', frame: null, currentDiameter: null, sourcePartId: id, error: null,
+    })
     getEngine().setResizeOverlay(null)
-    return
+    return null
   }
   const centerDeg = store.resize.autoHead
     ? detectHeadAngleDeg(mesh, frame)
@@ -740,9 +743,17 @@ export function detectResizeFrame() {
     frame,
     currentDiameter: frame.innerR * 2,
     protectedCenterDeg: centerDeg,
+    sourcePartId: id,
     error: null,
   })
   refreshResizeOverlay()
+  return frame
+}
+
+/** Auto-detect the ring frame + current inner size of the selected part. */
+export function detectResizeFrame() {
+  const id = resizeTargetPart()
+  if (id) detectResizeFrameFor(id)
 }
 
 export function setResizeMode(mode: ResizeMode) {
@@ -760,17 +771,17 @@ export function setResizeTargetSystem(system: SizeSystem) {
 }
 
 export function setResizeTargetSize(value: number) {
+  if (!Number.isFinite(value)) return
   const r = useAppStore.getState().resize
-  useAppStore.getState().patchResize({
-    targetSize: value,
-    targetDiameter: sizeToDiameter(r.targetSystem, value),
-  })
+  const targetDiameter = sizeToDiameter(r.targetSystem, value)
+  if (!(Number.isFinite(targetDiameter) && targetDiameter > 0)) return
+  useAppStore.getState().patchResize({ targetSize: value, targetDiameter })
   refreshResizeOverlay()
 }
 
 export function setResizeTargetDiameter(mm: number) {
   const r = useAppStore.getState().resize
-  if (!(mm > 0)) return
+  if (!(Number.isFinite(mm) && mm > 0)) return
   useAppStore.getState().patchResize({
     targetDiameter: mm,
     targetSize: diameterToSize(r.targetSystem, mm),
@@ -836,11 +847,17 @@ export async function applyResize(): Promise<void> {
   const id = resizeTargetPart()
   if (!id) return
   const eng = getEngine()
-  const r = useAppStore.getState().resize
-  if (!r.frame || r.detected !== true) {
-    useAppStore.getState().patchResize({ error: 'Auto-detect the ring size first.' })
-    return
+  let r = useAppStore.getState().resize
+  // selection may have changed since detect — re-bind the frame to this part so
+  // we never deform one ring using another's axis/centre.
+  if (r.sourcePartId !== id || !r.frame || r.detected !== true) {
+    if (!detectResizeFrameFor(id)) {
+      useAppStore.getState().patchResize({ error: 'Auto-detect the ring size first.' })
+      return
+    }
+    r = useAppStore.getState().resize
   }
+  if (!r.frame) return
   const mesh = eng.getWorldMeshData(id)
   if (!mesh) return
   useAppStore.getState().patchResize({ busy: true, error: null })
@@ -870,6 +887,7 @@ export async function applyResize(): Promise<void> {
     useAppStore.getState().patchResize({
       busy: false,
       canUndo: true,
+      sourcePartId: id,
       frame: newFrame ?? r.frame,
       currentDiameter: newFrame ? newFrame.innerR * 2 : r.currentDiameter,
     })
@@ -894,6 +912,7 @@ export function undoResize(): void {
   const frame = mesh ? analyzeRingFrame(mesh) : null
   useAppStore.getState().patchResize({
     canUndo: (stack?.length ?? 0) > 0,
+    sourcePartId: id,
     frame,
     currentDiameter: frame ? frame.innerR * 2 : null,
     detected: frame ? true : 'none',

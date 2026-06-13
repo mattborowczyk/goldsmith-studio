@@ -66,6 +66,7 @@ export function anglePointOnRing(frame: RingFrame, deg: number, radius: number):
  * of radii) but the user can always override.
  */
 export function detectHeadAngleDeg(mesh: MeshData, frame: RingFrame, bins = 180): number {
+  bins = Math.max(1, Math.floor(bins)) // public param: never construct a bad typed array
   const p = mesh.positions
   const u = (frame.axis + 1) % 3
   const v = (frame.axis + 2) % 3
@@ -103,6 +104,9 @@ export interface ResizeOptions {
  */
 export function resizeRing(mesh: MeshData, opts: ResizeOptions): MeshData {
   const { frame, mode } = opts
+  if (!Number.isFinite(opts.targetInnerDiameter) || opts.targetInnerDiameter <= 0) {
+    throw new Error('resizeRing: targetInnerDiameter must be a finite positive number')
+  }
   const targetInnerR = opts.targetInnerDiameter / 2
   const delta = targetInnerR - frame.innerR
   const u = (frame.axis + 1) % 3

@@ -219,11 +219,12 @@ export class SceneManager {
     this.renderer.domElement.addEventListener('pointermove', (e) => {
       if (this.draggingHandle !== null) this.updateHandleDrag(e)
     })
+    this.renderer.domElement.addEventListener('pointercancel', (e) => {
+      this.endHandleDrag(e.pointerId)
+    })
     this.renderer.domElement.addEventListener('pointerup', (e) => {
       if (this.draggingHandle !== null) {
-        this.draggingHandle = null
-        this.controls.enabled = true
-        this.renderer.domElement.releasePointerCapture?.(e.pointerId)
+        this.endHandleDrag(e.pointerId)
         return
       }
       const dx = e.clientX - this.downPos.x
@@ -811,7 +812,22 @@ export class SceneManager {
     this.emit('resizeHandleDrag', protectedDeg)
   }
 
+  /** End a handle drag from any exit path (up / cancel / overlay cleared). */
+  private endHandleDrag(pointerId?: number) {
+    if (this.draggingHandle === null) return
+    this.draggingHandle = null
+    this.controls.enabled = true
+    if (pointerId !== undefined) {
+      try {
+        this.renderer.domElement.releasePointerCapture(pointerId)
+      } catch {
+        // capture may never have been acquired
+      }
+    }
+  }
+
   private clearResizeOverlay() {
+    this.endHandleDrag()
     this.resizeHandles = []
     for (const child of [...this.resizeGroup.children]) {
       this.resizeGroup.remove(child)
@@ -1115,7 +1131,9 @@ export class SceneManager {
     const outW = width
     const outH = Math.round((width * h) / w)
 
-    const hidden: THREE.Object3D[] = [this.grid, this.gizmoHelper, this.highlightGroup]
+    const hidden: THREE.Object3D[] = [
+      this.grid, this.gizmoHelper, this.highlightGroup, this.resizeGroup,
+    ]
     if (this.sectionHelper) hidden.push(this.sectionHelper)
     const prevVisible = hidden.map((o) => o.visible)
     hidden.forEach((o) => (o.visible = false))

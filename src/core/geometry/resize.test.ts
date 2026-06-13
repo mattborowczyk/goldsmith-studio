@@ -88,6 +88,17 @@ describe('resizeRing — uniform (wedding band)', () => {
   })
 })
 
+describe('resizeRing — input validation', () => {
+  const mesh = generateBandRing({ ...defaultRingParams(), innerDiameter: 17, profile: 'flat' })
+  const frame = analyzeRingFrame(mesh)!
+
+  it('rejects non-finite or non-positive target diameters', () => {
+    for (const bad of [0, -5, NaN, Infinity]) {
+      expect(() => resizeRing(mesh, { frame, mode: 'uniform', targetInnerDiameter: bad })).toThrow()
+    }
+  })
+})
+
 describe('resizeRing — protect-head (solitaire)', () => {
   const mesh = generateBandRing({ ...defaultRingParams(), innerDiameter: 17, profile: 'flat' })
   const frame = analyzeRingFrame(mesh)!

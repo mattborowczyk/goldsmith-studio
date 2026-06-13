@@ -120,19 +120,7 @@ export function analyzeRingFrame(mesh: MeshData): RingFrame | null {
   let cu = (min[u] + max[u]) / 2
   let cv = (min[v] + max[v]) / 2
 
-  // reject solid parts (a triangle covering the axis means there is no hole)
   const idx = mesh.indices
-  for (let t = 0; t < idx.length; t += 3) {
-    if (
-      triCovers2D(
-        p[idx[t] * 3 + u] - cu, p[idx[t] * 3 + v] - cv,
-        p[idx[t + 1] * 3 + u] - cu, p[idx[t + 1] * 3 + v] - cv,
-        p[idx[t + 2] * 3 + u] - cu, p[idx[t + 2] * 3 + v] - cv,
-      )
-    ) {
-      return null
-    }
-  }
 
   // Refine the in-plane centre to the centre of the finger hole. The bbox
   // centre is skewed when the ring is radially asymmetric (a solitaire head, a
@@ -164,6 +152,21 @@ export function analyzeRingFrame(mesh: MeshData): RingFrame | null {
     cu = fit[0]
     cv = fit[1]
     if (moved < 1e-5) break
+  }
+
+  // reject solid parts (a triangle covering the refined centre means no hole).
+  // Run after the fit so a skewed bbox centre on an asymmetric ring — a chunky
+  // solitaire head — can't land in solid material and false-reject a real ring.
+  for (let t = 0; t < idx.length; t += 3) {
+    if (
+      triCovers2D(
+        p[idx[t] * 3 + u] - cu, p[idx[t] * 3 + v] - cv,
+        p[idx[t + 1] * 3 + u] - cu, p[idx[t + 1] * 3 + v] - cv,
+        p[idx[t + 2] * 3 + u] - cu, p[idx[t + 2] * 3 + v] - cv,
+      )
+    ) {
+      return null
+    }
   }
 
   let minR2 = Infinity

@@ -163,6 +163,7 @@ function ProtectHeadSection() {
       <Button
         variant={resize.picking ? 'default' : 'secondary'}
         size="sm"
+        disabled={resize.detected !== true}
         onClick={() => setResizePicking(!resize.picking)}
       >
         <Crosshair /> {resize.picking ? 'Tap the head in the viewport…' : 'Pick head in viewport'}
