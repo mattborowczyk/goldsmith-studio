@@ -26,16 +26,20 @@ import {
   type Material,
 } from '@/core/calc/materials'
 import { fetchSpotPricesPerGram, type Currency } from '@/core/calc/spotPrices'
-import { estimateInnerDiameter, volumeAndArea } from '@/core/geometry/measure'
+import { analyzeRingFrame, estimateInnerDiameter, volumeAndArea } from '@/core/geometry/measure'
+import { detectHeadAngleDeg, pointAngleDeg, resizeRing } from '@/core/geometry/resize'
+import { diameterToSize, sizeToDiameter, ukLabel, type SizeSystem } from '@/core/generators/ringSizes'
 import type {
   DisplayMode,
   ImportUnit,
   Measurement,
   MeshData,
   PartAppearance,
+  ResizeMode,
+  ResizeOverlay,
   Vec3,
 } from '@/core/types'
-import { UNIT_TO_MM } from '@/core/types'
+import { HEAL_PRESETS, UNIT_TO_MM } from '@/core/types'
 import { useAppStore, type CostSettings, type SectionState } from '@/store/appStore'
 
 /**
@@ -47,7 +51,9 @@ import { useAppStore, type CostSettings, type SectionState } from '@/store/appSt
 let engine: SceneManager | null = null
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let nextPartNum = 1
-/** Non-destructive heal: previous geometry+transform per part, newest last. */
+/** Which tab armed the shared pick mode — routes the pointPicked event. */
+let pickConsumer: 'measure' | 'resize' | null = null
+/** Non-destructive heal/resize: previous geometry+transform per part, newest last. */
 const revisions = new Map<string, { data: MeshData; matrix: number[] }[]>()
 
 export function getEngine(): SceneManager {
@@ -75,6 +81,7 @@ export function initEngine(container: HTMLElement): SceneManager {
     updateRepairUndoFlag(id)
   })
   engine.on('pointPicked', handlePointPicked)
+  engine.on('resizeHandleDrag', (protectedDeg) => setResizeProtectedWidth(protectedDeg))
 
   void restoreSession()
   void initCostData()
@@ -541,6 +548,10 @@ export function formatMoney(value: number, currency: Currency): string {
 // ---------- measurements & sections (plan §2.3) ----------
 
 function handlePointPicked(point: Vec3) {
+  if (pickConsumer === 'resize') {
+    handleResizePointPicked(point)
+    return
+  }
   const store = useAppStore.getState()
   const pending = store.measure.pendingPoint
   if (!pending) {
@@ -566,6 +577,7 @@ function handlePointPicked(point: Vec3) {
 export function setMeasurePicking(on: boolean) {
   const store = useAppStore.getState()
   const eng = getEngine()
+  pickConsumer = on ? 'measure' : null
   eng.setPickMode(on)
   // park the gizmo while picking so taps near it don't grab a handle
   eng.setGizmoMode(on ? 'none' : store.gizmoMode)
@@ -665,4 +677,232 @@ export function detectInnerDiameter() {
   if (!mesh) return
   const est = estimateInnerDiameter(mesh)
   useAppStore.getState().patchMeasure({ innerDiameter: est ?? 'none' })
+}
+
+// ---------- smart ring resizer (plan §2.6) ----------
+
+/** Resolve the part to resize: the selection, or the only part if there's one. */
+function resizeTargetPart(): string | null {
+  const store = useAppStore.getState()
+  if (store.selectedId) return store.selectedId
+  if (store.parts.length === 1) {
+    getEngine().select(store.parts[0].id)
+    return store.parts[0].id
+  }
+  store.patchResize({ error: 'Select a ring first (tap it in the viewport or the parts list).' })
+  return null
+}
+
+/** "US 7.0" / "UK N½" / "EU 54.4" for the chosen system at a given inner Ø. */
+function sizeLabelFor(system: SizeSystem, diameter: number): string {
+  const size = diameterToSize(system, diameter)
+  return system === 'UK' ? `UK ${ukLabel(size)}` : `${system} ${size.toFixed(1)}`
+}
+
+/** Rebuild the 3D protected-sector gauge + before/after labels from store state. */
+function refreshResizeOverlay() {
+  const r = useAppStore.getState().resize
+  if (!engine) return
+  if (!r.frame || r.detected !== true || r.currentDiameter === null) {
+    engine.setResizeOverlay(null)
+    return
+  }
+  const overlay: ResizeOverlay = {
+    frame: r.frame,
+    mode: r.mode,
+    protectedCenterDeg: r.protectedCenterDeg,
+    protectedDeg: r.protectedDeg,
+    smoothingDeg: r.smoothingDeg,
+    beforeLabel: `Before · ${sizeLabelFor(r.targetSystem, r.currentDiameter)} · Ø${r.currentDiameter.toFixed(2)}`,
+    afterLabel: `After · ${sizeLabelFor(r.targetSystem, r.targetDiameter)} · Ø${r.targetDiameter.toFixed(2)}`,
+  }
+  engine.setResizeOverlay(overlay)
+}
+
+/** Auto-detect the ring frame + current inner size of the selected part. */
+export function detectResizeFrame() {
+  const id = resizeTargetPart()
+  if (!id) return
+  const mesh = getEngine().getWorldMeshData(id)
+  if (!mesh) return
+  const frame = analyzeRingFrame(mesh)
+  const store = useAppStore.getState()
+  if (!frame) {
+    store.patchResize({ detected: 'none', frame: null, currentDiameter: null, error: null })
+    getEngine().setResizeOverlay(null)
+    return
+  }
+  const centerDeg = store.resize.autoHead
+    ? detectHeadAngleDeg(mesh, frame)
+    : store.resize.protectedCenterDeg
+  store.patchResize({
+    detected: true,
+    frame,
+    currentDiameter: frame.innerR * 2,
+    protectedCenterDeg: centerDeg,
+    error: null,
+  })
+  refreshResizeOverlay()
+}
+
+export function setResizeMode(mode: ResizeMode) {
+  useAppStore.getState().patchResize({ mode })
+  refreshResizeOverlay()
+}
+
+export function setResizeTargetSystem(system: SizeSystem) {
+  const r = useAppStore.getState().resize
+  useAppStore.getState().patchResize({
+    targetSystem: system,
+    targetSize: diameterToSize(system, r.targetDiameter),
+  })
+  refreshResizeOverlay()
+}
+
+export function setResizeTargetSize(value: number) {
+  const r = useAppStore.getState().resize
+  useAppStore.getState().patchResize({
+    targetSize: value,
+    targetDiameter: sizeToDiameter(r.targetSystem, value),
+  })
+  refreshResizeOverlay()
+}
+
+export function setResizeTargetDiameter(mm: number) {
+  const r = useAppStore.getState().resize
+  if (!(mm > 0)) return
+  useAppStore.getState().patchResize({
+    targetDiameter: mm,
+    targetSize: diameterToSize(r.targetSystem, mm),
+  })
+  refreshResizeOverlay()
+}
+
+export function setResizeProtectedCenter(deg: number) {
+  useAppStore.getState().patchResize({
+    protectedCenterDeg: ((deg % 360) + 360) % 360,
+    autoHead: false,
+  })
+  refreshResizeOverlay()
+}
+
+export function setResizeAutoHead(on: boolean) {
+  const store = useAppStore.getState()
+  store.patchResize({ autoHead: on })
+  if (on) {
+    // recompute the head angle from the current geometry
+    const id = store.selectedId ?? (store.parts.length === 1 ? store.parts[0].id : null)
+    const mesh = id ? getEngine().getWorldMeshData(id) : null
+    if (mesh && store.resize.frame) {
+      store.patchResize({ protectedCenterDeg: detectHeadAngleDeg(mesh, store.resize.frame) })
+    }
+  }
+  refreshResizeOverlay()
+}
+
+export function setResizeProtectedWidth(deg: number) {
+  useAppStore.getState().patchResize({ protectedDeg: Math.min(Math.max(deg, 4), 176) })
+  refreshResizeOverlay()
+}
+
+export function setResizeSmoothing(deg: number) {
+  useAppStore.getState().patchResize({ smoothingDeg: Math.min(Math.max(deg, 0), 120) })
+  refreshResizeOverlay()
+}
+
+export function setResizeReheal(on: boolean) {
+  useAppStore.getState().patchResize({ reheal: on })
+}
+
+/** Arm/disarm viewport picking to set the protected-zone centre. */
+export function setResizePicking(on: boolean) {
+  const store = useAppStore.getState()
+  const eng = getEngine()
+  pickConsumer = on ? 'resize' : null
+  eng.setPickMode(on)
+  eng.setGizmoMode(on ? 'none' : store.gizmoMode)
+  store.patchResize({ picking: on })
+}
+
+function handleResizePointPicked(point: Vec3) {
+  const frame = useAppStore.getState().resize.frame
+  if (!frame) return
+  setResizeProtectedCenter(pointAngleDeg(point, frame))
+  setResizePicking(false)
+}
+
+/** Deform the selected ring to the target size, non-destructively. */
+export async function applyResize(): Promise<void> {
+  const id = resizeTargetPart()
+  if (!id) return
+  const eng = getEngine()
+  const r = useAppStore.getState().resize
+  if (!r.frame || r.detected !== true) {
+    useAppStore.getState().patchResize({ error: 'Auto-detect the ring size first.' })
+    return
+  }
+  const mesh = eng.getWorldMeshData(id)
+  if (!mesh) return
+  useAppStore.getState().patchResize({ busy: true, error: null })
+  try {
+    let out = resizeRing(mesh, {
+      frame: r.frame,
+      mode: r.mode,
+      targetInnerDiameter: r.targetDiameter,
+      protectedCenterDeg: r.protectedCenterDeg,
+      protectedDeg: r.protectedDeg,
+      smoothingDeg: r.smoothingDeg,
+    })
+    if (r.reheal) {
+      out = (await repairClient.heal(out, { mode: 'safe', ...HEAL_PRESETS.safe })).mesh
+    }
+    // push current state for undo, then swap in the resized world-space mesh
+    const saved = eng.getPartForSave(id)
+    if (saved) {
+      const stack = revisions.get(id) ?? []
+      stack.push({ data: saved.data, matrix: saved.matrix })
+      revisions.set(id, stack)
+    }
+    replaceWithWorldMesh(id, out)
+    // re-detect on the new geometry — the target becomes the new current size
+    const newMesh = eng.getWorldMeshData(id)
+    const newFrame = newMesh ? analyzeRingFrame(newMesh) : null
+    useAppStore.getState().patchResize({
+      busy: false,
+      canUndo: true,
+      frame: newFrame ?? r.frame,
+      currentDiameter: newFrame ? newFrame.innerR * 2 : r.currentDiameter,
+    })
+    refreshResizeOverlay()
+  } catch (err) {
+    useAppStore.getState().patchResize({ busy: false, error: String(err) })
+  }
+}
+
+export function undoResize(): void {
+  const id = useAppStore.getState().selectedId
+  if (!id) return
+  const stack = revisions.get(id)
+  const prev = stack?.pop()
+  if (!prev) return
+  const eng = getEngine()
+  const name = eng.partInfo(id)?.name ?? 'ring'
+  eng.removePart(id)
+  eng.addPart(id, name, prev.data, prev.matrix)
+  eng.select(id)
+  const mesh = eng.getWorldMeshData(id)
+  const frame = mesh ? analyzeRingFrame(mesh) : null
+  useAppStore.getState().patchResize({
+    canUndo: (stack?.length ?? 0) > 0,
+    frame,
+    currentDiameter: frame ? frame.innerR * 2 : null,
+    detected: frame ? true : 'none',
+  })
+  refreshResizeOverlay()
+}
+
+/** Disarm picking + clear the 3D overlay when leaving the Resize tab. */
+export function teardownResize() {
+  if (pickConsumer === 'resize') setResizePicking(false)
+  engine?.setResizeOverlay(null)
 }

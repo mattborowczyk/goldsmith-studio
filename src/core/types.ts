@@ -141,3 +141,43 @@ export interface SectionOptions {
   /** Slab thickness in mm (slice mode). */
   thickness: number
 }
+
+// ---------- smart ring resizer (plan §2.6) ----------
+
+/**
+ * Cylindrical frame of a ring, recovered from its mesh: the ring axis, the
+ * in-plane centre the band turns about, and inner/outer radii. The resizer
+ * deforms vertices in the (axis, centre) cylindrical coordinate system.
+ */
+export interface RingFrame {
+  /** Index (0=x, 1=y, 2=z) of the ring axis — the smallest bbox extent. */
+  axis: 0 | 1 | 2
+  /** In-plane centre [cu, cv] on the u=(axis+1)%3, v=(axis+2)%3 axes. */
+  center: [number, number]
+  /** Midpoint along the ring axis (where overlay/labels sit). */
+  axialCenter: number
+  /** Smallest radial vertex distance from the axis (mm). */
+  innerR: number
+  /** Largest radial vertex distance from the axis (mm). */
+  outerR: number
+}
+
+/**
+ * Wedding band resizes the whole shank uniformly; solitaire keeps a protected
+ * angular zone (the head/setting) rigid and deforms only the shank.
+ */
+export type ResizeMode = 'uniform' | 'protect-head'
+
+/** Everything the engine needs to draw the protected-sector gauge + labels. */
+export interface ResizeOverlay {
+  frame: RingFrame
+  mode: ResizeMode
+  /** Centre of the protected zone, degrees around the ring axis. */
+  protectedCenterDeg: number
+  /** Full angular width of the rigid protected zone (degrees). */
+  protectedDeg: number
+  /** Angular width of each blend zone flanking the protected zone (degrees). */
+  smoothingDeg: number
+  beforeLabel: string
+  afterLabel: string
+}
