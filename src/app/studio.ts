@@ -847,16 +847,15 @@ export async function applyResize(): Promise<void> {
   const id = resizeTargetPart()
   if (!id) return
   const eng = getEngine()
-  let r = useAppStore.getState().resize
-  // selection may have changed since detect — re-bind the frame to this part so
-  // we never deform one ring using another's axis/centre.
-  if (r.sourcePartId !== id || !r.frame || r.detected !== true) {
-    if (!detectResizeFrameFor(id)) {
-      useAppStore.getState().patchResize({ error: 'Auto-detect the ring size first.' })
-      return
-    }
-    r = useAppStore.getState().resize
+  // Always re-analyze the live mesh: the selection may have changed, or the
+  // geometry may have been replaced in place (e.g. a heal) leaving a stale
+  // frame. detectResizeFrameFor keeps a manual protected centre when autoHead
+  // is off, so user intent is preserved.
+  if (!detectResizeFrameFor(id)) {
+    useAppStore.getState().patchResize({ error: 'Auto-detect the ring size first.' })
+    return
   }
+  const r = useAppStore.getState().resize
   if (!r.frame) return
   const mesh = eng.getWorldMeshData(id)
   if (!mesh) return
