@@ -630,6 +630,18 @@ export function draftingView() {
   useAppStore.getState().setTurntable(false)
 }
 
+// ---------- parametric generators (plan §2.5) ----------
+
+/** Drop a freshly generated mesh into the scene as a new selected part. */
+export function addGeneratedPart(name: string, data: MeshData): string {
+  const eng = getEngine()
+  const id = newPartId()
+  eng.addPart(id, name, data)
+  eng.select(id)
+  eng.fitToView()
+  return id
+}
+
 export function detectInnerDiameter() {
   const id = requireSelection()
   if (!id) return

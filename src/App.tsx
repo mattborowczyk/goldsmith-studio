@@ -5,6 +5,7 @@ import { PartsPanel } from '@/components/PartsPanel'
 import { ImportPanel } from '@/components/panels/ImportPanel'
 import { RepairPanel } from '@/components/panels/RepairPanel'
 import { MeasurePanel } from '@/components/panels/MeasurePanel'
+import { BuildPanel } from '@/components/panels/BuildPanel'
 import { CostPanel } from '@/components/panels/CostPanel'
 import { useAppStore } from '@/store/appStore'
 
@@ -12,6 +13,7 @@ const TAB_TITLES: Record<string, string> = {
   import: 'Import',
   repair: 'Repair Center',
   measure: 'Measure & Sections',
+  build: 'Generators',
   cost: 'Weight & Cost',
 }
 
@@ -32,6 +34,7 @@ export default function App() {
         {tab === 'import' && <ImportPanel />}
         {tab === 'repair' && <RepairPanel />}
         {tab === 'measure' && <MeasurePanel />}
+        {tab === 'build' && <BuildPanel />}
         {tab === 'cost' && <CostPanel />}
       </aside>
     </div>
