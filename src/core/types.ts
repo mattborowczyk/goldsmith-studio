@@ -18,6 +18,19 @@ export type DisplayMode =
   | 'normals'
   | 'backface'
 
+/**
+ * A part's display material. The global display modes plus two generator
+ * finishes: `gem` (clear, brilliant) and `cutter` (translucent boolean tool).
+ */
+export type MaterialPreset = DisplayMode | 'gem' | 'cutter'
+
+/** Per-part appearance override; `material: null` follows the global display mode. */
+export interface PartAppearance {
+  material: MaterialPreset | null
+  /** Flat (faceted) shading instead of smoothed normals — crisp gem facets. */
+  flatShading: boolean
+}
+
 export type Projection = 'perspective' | 'orthographic'
 
 export type ViewPreset = 'top' | 'front' | 'left' | 'right' | 'iso'
@@ -52,6 +65,9 @@ export interface PartInfo {
   triangles: number
   /** Axis-aligned bounding box in mm, after transform. */
   bbox: { x: number; y: number; z: number }
+  /** Per-part material override; null follows the global display mode. */
+  material: MaterialPreset | null
+  flatShading: boolean
 }
 
 /** Result of the (pure-TS) mesh analysis pass. */

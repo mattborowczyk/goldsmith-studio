@@ -294,7 +294,12 @@ function GemSection() {
 
       <Button
         size="sm"
-        onClick={() => addGeneratedPart(`${info.label} ${length.toFixed(1)}mm`, generateGem(params()))}
+        onClick={() =>
+          addGeneratedPart(`${info.label} ${length.toFixed(1)}mm`, generateGem(params()), {
+            material: 'gem',
+            flatShading: true,
+          })
+        }
       >
         <Plus /> Add gem
       </Button>
@@ -311,7 +316,10 @@ function GemSection() {
           size="sm"
           title="Oversized negative for boolean-subtracting a seat"
           onClick={() =>
-            addGeneratedPart(`${info.label} cutter`, generateGemCutter(params(), clearance))
+            addGeneratedPart(`${info.label} cutter`, generateGemCutter(params(), clearance), {
+              material: 'cutter',
+              flatShading: true,
+            })
           }
         >
           Add cutter

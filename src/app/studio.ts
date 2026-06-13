@@ -27,7 +27,14 @@ import {
 } from '@/core/calc/materials'
 import { fetchSpotPricesPerGram, type Currency } from '@/core/calc/spotPrices'
 import { estimateInnerDiameter, volumeAndArea } from '@/core/geometry/measure'
-import type { DisplayMode, ImportUnit, Measurement, MeshData, Vec3 } from '@/core/types'
+import type {
+  DisplayMode,
+  ImportUnit,
+  Measurement,
+  MeshData,
+  PartAppearance,
+  Vec3,
+} from '@/core/types'
 import { UNIT_TO_MM } from '@/core/types'
 import { useAppStore, type CostSettings, type SectionState } from '@/store/appStore'
 
@@ -248,6 +255,8 @@ async function persistScene() {
       positions: saved.data.positions,
       indices: saved.data.indices,
       order,
+      material: saved.material,
+      flatShading: saved.flatShading,
     })
   })
   try {
@@ -280,7 +289,10 @@ async function restoreSession() {
       store.setGridVisible(settings.gridVisible)
     }
     for (const p of parts) {
-      engine.addPart(p.id, p.name, p.data, p.matrix)
+      engine.addPart(p.id, p.name, p.data, p.matrix, {
+        material: p.material,
+        flatShading: p.flatShading,
+      })
       engine.setPartVisible(p.id, p.visible)
     }
     if (parts.length) engine.fitToView()
@@ -633,10 +645,14 @@ export function draftingView() {
 // ---------- parametric generators (plan §2.5) ----------
 
 /** Drop a freshly generated mesh into the scene as a new selected part. */
-export function addGeneratedPart(name: string, data: MeshData): string {
+export function addGeneratedPart(
+  name: string,
+  data: MeshData,
+  appearance?: Partial<PartAppearance>,
+): string {
   const eng = getEngine()
   const id = newPartId()
-  eng.addPart(id, name, data)
+  eng.addPart(id, name, data, undefined, appearance)
   eng.select(id)
   eng.fitToView()
   return id
