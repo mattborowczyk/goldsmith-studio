@@ -6,6 +6,7 @@ import { ImportPanel } from '@/components/panels/ImportPanel'
 import { RepairPanel } from '@/components/panels/RepairPanel'
 import { MeasurePanel } from '@/components/panels/MeasurePanel'
 import { BuildPanel } from '@/components/panels/BuildPanel'
+import { ResizePanel } from '@/components/panels/ResizePanel'
 import { CostPanel } from '@/components/panels/CostPanel'
 import { useAppStore } from '@/store/appStore'
 
@@ -14,6 +15,7 @@ const TAB_TITLES: Record<string, string> = {
   repair: 'Repair Center',
   measure: 'Measure & Sections',
   build: 'Generators',
+  resize: 'Smart Resizer',
   cost: 'Weight & Cost',
 }
 
@@ -35,6 +37,7 @@ export default function App() {
         {tab === 'repair' && <RepairPanel />}
         {tab === 'measure' && <MeasurePanel />}
         {tab === 'build' && <BuildPanel />}
+        {tab === 'resize' && <ResizePanel />}
         {tab === 'cost' && <CostPanel />}
       </aside>
     </div>

@@ -22,10 +22,12 @@ import type {
   PartAppearance,
   PartInfo,
   Projection,
+  ResizeOverlay,
   SectionOptions,
   Vec3,
   ViewPreset,
 } from '../types'
+import { anglePointOnRing, pointAngleDeg } from '../geometry/resize'
 import { createBackMaterial, createMaterial } from './materials'
 import { createBackgroundTexture, createStudioEnvironment } from './environment'
 
@@ -49,6 +51,8 @@ export interface SceneManagerEvents {
   selectionChanged: (id: string | null) => void
   /** A surface/vertex point was picked while measure-pick mode is armed. */
   pointPicked: (point: Vec3) => void
+  /** A resizer sector handle was dragged to a new protected-zone width (deg). */
+  resizeHandleDrag: (protectedDeg: number) => void
 }
 
 /** One rendered dimension: line + endpoint markers + screen-sized label. */
@@ -98,12 +102,18 @@ export class SceneManager {
   private measureItems = new Map<string, MeasureItem>()
   private pendingMarker: THREE.Mesh | null = null
   private pickMode = false
+  private resizeGroup = new THREE.Group()
+  private resizeOverlay: ResizeOverlay | null = null
+  /** Draggable sector-edge handles; index 0/1 stored in userData.handleIndex. */
+  private resizeHandles: THREE.Mesh[] = []
+  private draggingHandle: number | null = null
   private sectionHelper: THREE.Object3D | null = null
   private backgroundTexture: THREE.Texture | null = null
   private listeners: { [K in keyof SceneManagerEvents]: Set<SceneManagerEvents[K]> } = {
     partsChanged: new Set(),
     selectionChanged: new Set(),
     pointPicked: new Set(),
+    resizeHandleDrag: new Set(),
   }
   private tween: {
     fromPos: THREE.Vector3
@@ -164,6 +174,7 @@ export class SceneManager {
     this.scene.add(this.grid)
     this.scene.add(this.highlightGroup)
     this.scene.add(this.measureGroup)
+    this.scene.add(this.resizeGroup)
     this.renderer.localClippingEnabled = true
 
     // Key light exists mostly to cast the soft ground shadow; the softbox
@@ -193,11 +204,29 @@ export class SceneManager {
     this.resizeObserver = new ResizeObserver(() => this.handleResize())
     this.resizeObserver.observe(container)
 
-    // tap-select (only when the pointer didn't drag)
+    // resizer sector-handle drag takes priority over tap-select / orbit
     this.renderer.domElement.addEventListener('pointerdown', (e) => {
       this.downPos.set(e.clientX, e.clientY)
+      if (this.tryGrabHandle(e)) {
+        this.controls.enabled = false
+        try {
+          this.renderer.domElement.setPointerCapture(e.pointerId)
+        } catch {
+          // non-fatal: drag still works via the move/up listeners
+        }
+      }
+    })
+    this.renderer.domElement.addEventListener('pointermove', (e) => {
+      if (this.draggingHandle !== null) this.updateHandleDrag(e)
+    })
+    this.renderer.domElement.addEventListener('pointercancel', (e) => {
+      this.endHandleDrag(e.pointerId)
     })
     this.renderer.domElement.addEventListener('pointerup', (e) => {
+      if (this.draggingHandle !== null) {
+        this.endHandleDrag(e.pointerId)
+        return
+      }
       const dx = e.clientX - this.downPos.x
       const dy = e.clientY - this.downPos.y
       if (dx * dx + dy * dy < 25) this.handleTap(e)
@@ -463,12 +492,17 @@ export class SceneManager {
     if (this.selectedId) this.gizmo.attach(this.parts.get(this.selectedId)!.mesh)
   }
 
-  private handleTap(e: PointerEvent) {
+  /** Pointer event → normalized device coords in the canvas. */
+  private ndcOf(e: PointerEvent): THREE.Vector2 {
     const rect = this.renderer.domElement.getBoundingClientRect()
-    const ndc = new THREE.Vector2(
+    return new THREE.Vector2(
       ((e.clientX - rect.left) / rect.width) * 2 - 1,
       -((e.clientY - rect.top) / rect.height) * 2 + 1,
     )
+  }
+
+  private handleTap(e: PointerEvent) {
+    const ndc = this.ndcOf(e)
     this.raycaster.setFromCamera(ndc, this.activeCamera)
     const meshes = [...this.parts.values()].filter((p) => p.mesh.visible).map((p) => p.mesh)
     const hits = this.raycaster.intersectObjects(meshes, false)
@@ -640,6 +674,168 @@ export class SceneManager {
       this.pendingMarker.scale.setScalar(
         this.worldPerPixel(this.pendingMarker.position) * (MARKER_PX + 3),
       )
+    }
+    // resizer handles + before/after labels keep a constant screen size too
+    for (const handle of this.resizeHandles) {
+      handle.scale.setScalar(this.worldPerPixel(handle.position) * 14)
+    }
+    for (const child of this.resizeGroup.children) {
+      const aspect = child.userData.labelAspect as number | undefined
+      if (aspect === undefined) continue
+      const h = this.worldPerPixel(child.position) * LABEL_PX
+      child.scale.set(h * aspect, h, 1)
+    }
+  }
+
+  // ---------- ring resizer (plan §2.6) ----------
+
+  /**
+   * Draw (or clear) the protected-sector gauge, drag handles and before/after
+   * labels for the smart resizer. Rebuilt wholesale on every change — cheap, and
+   * safe mid-drag because handles are grabbed by index, not object identity.
+   */
+  setResizeOverlay(overlay: ResizeOverlay | null) {
+    this.clearResizeOverlay()
+    this.resizeOverlay = overlay
+    if (!overlay) return
+    const { frame } = overlay
+    const gap = Math.max(frame.outerR * 0.2, 1.5)
+    const r0 = frame.outerR * 1.08
+    const r1 = r0 + gap
+
+    if (overlay.mode === 'uniform') {
+      // the whole band resizes — highlight the full gauge ring
+      this.resizeGroup.add(this.buildSectorMesh(overlay, 0, 360, r0, r1, 0xe8c260, 0.3))
+    } else {
+      const half = overlay.protectedDeg / 2
+      const c = overlay.protectedCenterDeg
+      // faint full ring for context, the rigid wedge, and the two blend zones
+      this.resizeGroup.add(this.buildSectorMesh(overlay, 0, 360, r0, r1, 0x6b6256, 0.12))
+      this.resizeGroup.add(this.buildSectorMesh(overlay, c - half, c + half, r0, r1, 0xe8c260, 0.6))
+      this.resizeGroup.add(
+        this.buildSectorMesh(overlay, c + half, c + half + overlay.smoothingDeg, r0, r1, 0x4fc3f7, 0.32),
+      )
+      this.resizeGroup.add(
+        this.buildSectorMesh(overlay, c - half - overlay.smoothingDeg, c - half, r0, r1, 0x4fc3f7, 0.32),
+      )
+      // grabbable handles on the rigid-zone edges
+      const rMid = (r0 + r1) / 2
+      for (const [i, edge] of [c - half, c + half].entries()) {
+        const handle = this.makeMarker('#f2efe9')
+        handle.scale.setScalar(1)
+        handle.position.fromArray(anglePointOnRing(frame, edge, rMid))
+        handle.userData.handleIndex = i
+        this.resizeGroup.add(handle)
+        this.resizeHandles.push(handle)
+      }
+    }
+
+    // before/after labels stacked above the ring (world up)
+    const center = new THREE.Vector3()
+    center.setComponent(frame.axis, frame.axialCenter)
+    center.setComponent((frame.axis + 1) % 3, frame.center[0])
+    center.setComponent((frame.axis + 2) % 3, frame.center[1])
+    const up = new THREE.Vector3(0, 1, 0)
+    const before = this.makeLabelSprite(overlay.beforeLabel, '#9aa0a8')
+    before.sprite.position.copy(center).addScaledVector(up, frame.outerR * 1.4)
+    before.sprite.userData.labelAspect = before.aspect
+    const after = this.makeLabelSprite(overlay.afterLabel, '#e8c260')
+    after.sprite.position.copy(center).addScaledVector(up, frame.outerR * 2.0)
+    after.sprite.userData.labelAspect = after.aspect
+    this.resizeGroup.add(before.sprite, after.sprite)
+  }
+
+  private buildSectorMesh(
+    overlay: ResizeOverlay, a1Deg: number, a2Deg: number, r0: number, r1: number,
+    color: number, opacity: number,
+  ): THREE.Mesh {
+    const { axis, center, axialCenter } = overlay.frame
+    const u = (axis + 1) % 3
+    const v = (axis + 2) % 3
+    const span = a2Deg - a1Deg
+    const steps = Math.max(2, Math.ceil(Math.abs(span) / 4))
+    const positions: number[] = []
+    const indices: number[] = []
+    for (let s = 0; s <= steps; s++) {
+      const rad = ((a1Deg + (span * s) / steps) * Math.PI) / 180
+      const cos = Math.cos(rad)
+      const sin = Math.sin(rad)
+      for (const r of [r0, r1]) {
+        const p = [0, 0, 0]
+        p[axis] = axialCenter
+        p[u] = center[0] + r * cos
+        p[v] = center[1] + r * sin
+        positions.push(p[0], p[1], p[2])
+      }
+    }
+    for (let s = 0; s < steps; s++) {
+      const a = s * 2, b = s * 2 + 1, c = s * 2 + 2, d = s * 2 + 3
+      indices.push(a, b, d, a, d, c)
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geo.setIndex(indices)
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity, side: THREE.DoubleSide,
+        depthTest: false, depthWrite: false,
+      }),
+    )
+    mesh.renderOrder = 996
+    return mesh
+  }
+
+  /** Did pointer-down land on a sector handle? Arms the drag if so. */
+  private tryGrabHandle(e: PointerEvent): boolean {
+    if (!this.resizeHandles.length) return false
+    this.raycaster.setFromCamera(this.ndcOf(e), this.activeCamera)
+    const hits = this.raycaster.intersectObjects(this.resizeHandles, false)
+    if (!hits.length) return false
+    this.draggingHandle = hits[0].object.userData.handleIndex as number
+    return true
+  }
+
+  /** Project the pointer onto the ring plane → symmetric protected width, emit. */
+  private updateHandleDrag(e: PointerEvent) {
+    const overlay = this.resizeOverlay
+    if (!overlay) return
+    this.raycaster.setFromCamera(this.ndcOf(e), this.activeCamera)
+    const normal = new THREE.Vector3().setComponent(overlay.frame.axis, 1)
+    const onPlane = new THREE.Vector3().setComponent(overlay.frame.axis, overlay.frame.axialCenter)
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, onPlane)
+    const hit = new THREE.Vector3()
+    if (!this.raycaster.ray.intersectPlane(plane, hit)) return
+    const angle = pointAngleDeg([hit.x, hit.y, hit.z], overlay.frame)
+    const half = Math.abs(((angle - overlay.protectedCenterDeg + 540) % 360) - 180)
+    const protectedDeg = Math.min(Math.max(half * 2, 4), 176)
+    this.emit('resizeHandleDrag', protectedDeg)
+  }
+
+  /** End a handle drag from any exit path (up / cancel / overlay cleared). */
+  private endHandleDrag(pointerId?: number) {
+    if (this.draggingHandle === null) return
+    this.draggingHandle = null
+    this.controls.enabled = true
+    if (pointerId !== undefined) {
+      try {
+        this.renderer.domElement.releasePointerCapture(pointerId)
+      } catch {
+        // capture may never have been acquired
+      }
+    }
+  }
+
+  private clearResizeOverlay() {
+    this.endHandleDrag()
+    this.resizeHandles = []
+    for (const child of [...this.resizeGroup.children]) {
+      this.resizeGroup.remove(child)
+      const obj = child as THREE.Mesh
+      obj.geometry?.dispose()
+      const mat = obj.material as (THREE.Material & { map?: THREE.Texture | null }) | undefined
+      mat?.map?.dispose?.()
+      mat?.dispose?.()
     }
   }
 
@@ -935,7 +1131,9 @@ export class SceneManager {
     const outW = width
     const outH = Math.round((width * h) / w)
 
-    const hidden: THREE.Object3D[] = [this.grid, this.gizmoHelper, this.highlightGroup]
+    const hidden: THREE.Object3D[] = [
+      this.grid, this.gizmoHelper, this.highlightGroup, this.resizeGroup,
+    ]
     if (this.sectionHelper) hidden.push(this.sectionHelper)
     const prevVisible = hidden.map((o) => o.visible)
     hidden.forEach((o) => (o.visible = false))
@@ -1000,6 +1198,7 @@ export class SceneManager {
     this.resizeObserver.disconnect()
     this.clearHighlights()
     this.clearMeasurements()
+    this.clearResizeOverlay()
     this.setSection(null)
     this.clearParts()
     for (const mat of this.matCache.values()) mat.dispose()

@@ -7,6 +7,8 @@ import type {
   Measurement,
   PartInfo,
   Projection,
+  ResizeMode,
+  RingFrame,
   SectionAxis,
   Vec3,
   WorkflowTab,
@@ -14,6 +16,7 @@ import type {
 import { HEAL_PRESETS } from '@/core/types'
 import type { HistoryEntry, Material } from '@/core/calc/materials'
 import type { Currency } from '@/core/calc/spotPrices'
+import type { SizeSystem } from '@/core/generators/ringSizes'
 
 export interface RepairState {
   /** Per-part revision stack for non-destructive heal undo. */
@@ -67,6 +70,34 @@ export interface MeasureState {
   innerDiameter: { diameter: number; axis: string } | null | 'none'
 }
 
+export interface ResizeState {
+  mode: ResizeMode
+  /** Part the detected frame belongs to — apply/undo must match it. */
+  sourcePartId: string | null
+  /** Target size input. */
+  targetSystem: SizeSystem
+  targetSize: number
+  /** Source of truth for the resize — target inner diameter in mm. */
+  targetDiameter: number
+  /** Detected current ring frame + inner Ø, or null/'none' when not a ring. */
+  frame: RingFrame | null
+  currentDiameter: number | null
+  detected: boolean | 'none'
+  /** protect-head zone. */
+  protectedCenterDeg: number
+  /** Use the auto-detected head angle instead of a manual centre. */
+  autoHead: boolean
+  protectedDeg: number
+  smoothingDeg: number
+  /** Re-heal pass after deforming. */
+  reheal: boolean
+  /** Viewport pick mode armed to set the protected centre. */
+  picking: boolean
+  busy: boolean
+  canUndo: boolean
+  error: string | null
+}
+
 interface AppState {
   tab: WorkflowTab
   parts: PartInfo[]
@@ -84,6 +115,7 @@ interface AppState {
   repair: RepairState
   cost: CostState
   measure: MeasureState
+  resize: ResizeState
 
   setTab: (tab: WorkflowTab) => void
   setParts: (parts: PartInfo[]) => void
@@ -101,6 +133,7 @@ interface AppState {
   patchCost: (patch: Partial<CostState>) => void
   patchMeasure: (patch: Partial<MeasureState>) => void
   patchSection: (patch: Partial<SectionState>) => void
+  patchResize: (patch: Partial<ResizeState>) => void
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -150,6 +183,25 @@ export const useAppStore = create<AppState>((set) => ({
     },
     innerDiameter: null,
   },
+  resize: {
+    mode: 'uniform',
+    sourcePartId: null,
+    targetSystem: 'US',
+    targetSize: 7,
+    targetDiameter: 17.35, // US 7
+    frame: null,
+    currentDiameter: null,
+    detected: false,
+    protectedCenterDeg: 90,
+    autoHead: true,
+    protectedDeg: 45,
+    smoothingDeg: 40,
+    reheal: false,
+    picking: false,
+    busy: false,
+    canUndo: false,
+    error: null,
+  },
 
   setTab: (tab) => set({ tab }),
   setParts: (parts) => set({ parts }),
@@ -168,4 +220,5 @@ export const useAppStore = create<AppState>((set) => ({
   patchMeasure: (patch) => set((s) => ({ measure: { ...s.measure, ...patch } })),
   patchSection: (patch) =>
     set((s) => ({ measure: { ...s.measure, section: { ...s.measure.section, ...patch } } })),
+  patchResize: (patch) => set((s) => ({ resize: { ...s.resize, ...patch } })),
 }))
