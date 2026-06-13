@@ -16,15 +16,17 @@ import type {
   AnalysisReport,
   DisplayMode,
   GizmoMode,
+  MaterialPreset,
   Measurement,
   MeshData,
+  PartAppearance,
   PartInfo,
   Projection,
   SectionOptions,
   Vec3,
   ViewPreset,
 } from '../types'
-import { createMaterials, type DisplayMaterialSet } from './materials'
+import { createBackMaterial, createMaterial } from './materials'
 import { createBackgroundTexture, createStudioEnvironment } from './environment'
 
 interface ScenePart {
@@ -35,6 +37,9 @@ interface ScenePart {
   /** Source-of-truth geometry for repair/export/persistence. */
   data: MeshData
   displayGeometry: THREE.BufferGeometry
+  /** Per-part material override; null follows the global display mode. */
+  materialOverride: MaterialPreset | null
+  flatShading: boolean
 }
 
 export interface SceneManagerEvents {
@@ -76,7 +81,11 @@ export class SceneManager {
   private gizmoHelper: THREE.Object3D
   private container: HTMLElement
   private resizeObserver: ResizeObserver
-  private materials: Record<DisplayMode, DisplayMaterialSet>
+  /** Main materials cached by `${preset}:${flat}`, built lazily. */
+  private matCache = new Map<string, THREE.Material>()
+  private backMaterial: THREE.Material
+  /** Active clipping planes from the section tool, applied to every material. */
+  private clipPlanes: THREE.Plane[] = []
   private displayMode: DisplayMode = 'gold'
   private parts = new Map<string, ScenePart>()
   private partOrder: string[] = []
@@ -178,7 +187,7 @@ export class SceneManager {
     this.shadowCatcher.visible = false
     this.scene.add(this.shadowCatcher)
 
-    this.materials = createMaterials()
+    this.backMaterial = createBackMaterial()
     this.buildComposer()
 
     this.resizeObserver = new ResizeObserver(() => this.handleResize())
@@ -251,23 +260,71 @@ export class SceneManager {
 
   // ---------- parts ----------
 
-  addPart(id: string, name: string, data: MeshData, matrix?: number[]): PartInfo {
+  addPart(
+    id: string,
+    name: string,
+    data: MeshData,
+    matrix?: number[],
+    appearance?: Partial<PartAppearance>,
+  ): PartInfo {
     const displayGeometry = this.buildDisplayGeometry(data)
-    const set = this.materials[this.displayMode]
-    const mesh = new THREE.Mesh(displayGeometry, set.main)
+    const mesh = new THREE.Mesh(displayGeometry)
     mesh.castShadow = true
-    const backMesh = new THREE.Mesh(displayGeometry, set.back)
-    backMesh.visible = this.displayMode === 'backface'
+    const backMesh = new THREE.Mesh(displayGeometry, this.backMaterial)
     mesh.add(backMesh)
     mesh.userData.partId = id
     if (matrix) mesh.applyMatrix4(new THREE.Matrix4().fromArray(matrix))
     this.scene.add(mesh)
 
-    this.parts.set(id, { id, name, mesh, backMesh, data, displayGeometry })
+    const part: ScenePart = {
+      id, name, mesh, backMesh, data, displayGeometry,
+      materialOverride: appearance?.material ?? null,
+      flatShading: appearance?.flatShading ?? false,
+    }
+    this.parts.set(id, part)
     this.partOrder.push(id)
+    this.applyPartMaterial(part)
     this.updateShadowRig()
     this.emit('partsChanged')
     return this.partInfo(id)!
+  }
+
+  /** Get (or lazily build) the cached material for a preset + shading, with live clip planes. */
+  private getMaterial(preset: MaterialPreset, flat: boolean): THREE.Material {
+    const key = `${preset}:${flat}`
+    let mat = this.matCache.get(key)
+    if (!mat) {
+      mat = createMaterial(preset, flat)
+      this.matCache.set(key, mat)
+    }
+    mat.clippingPlanes = this.clipPlanes
+    mat.clipShadows = true
+    // section view needs interiors visible; otherwise the material's resting side
+    mat.side = this.clipPlanes.length ? THREE.DoubleSide : (mat.userData.baseSide as THREE.Side)
+    return mat
+  }
+
+  /** Assign a part its effective material (override, else global mode) + back overlay. */
+  private applyPartMaterial(part: ScenePart) {
+    const preset = part.materialOverride ?? this.displayMode
+    part.mesh.material = this.getMaterial(preset, part.flatShading)
+    part.backMesh.visible = preset === 'backface'
+  }
+
+  setPartMaterial(id: string, material: MaterialPreset | null) {
+    const part = this.parts.get(id)
+    if (!part) return
+    part.materialOverride = material
+    this.applyPartMaterial(part)
+    this.emit('partsChanged')
+  }
+
+  setPartFlatShading(id: string, flat: boolean) {
+    const part = this.parts.get(id)
+    if (!part) return
+    part.flatShading = flat
+    this.applyPartMaterial(part)
+    this.emit('partsChanged')
   }
 
   private buildDisplayGeometry(data: MeshData): THREE.BufferGeometry {
@@ -329,6 +386,8 @@ export class SceneManager {
       visible: part.mesh.visible,
       triangles: part.data.indices.length / 3,
       bbox: { x: size.x, y: size.y, z: size.z },
+      material: part.materialOverride,
+      flatShading: part.flatShading,
     }
   }
 
@@ -350,7 +409,14 @@ export class SceneManager {
   }
 
   /** Local-space mesh data + transform matrix, for persistence. */
-  getPartForSave(id: string): { data: MeshData; matrix: number[]; name: string; visible: boolean } | null {
+  getPartForSave(id: string): {
+    data: MeshData
+    matrix: number[]
+    name: string
+    visible: boolean
+    material: MaterialPreset | null
+    flatShading: boolean
+  } | null {
     const part = this.parts.get(id)
     if (!part) return null
     return {
@@ -361,6 +427,8 @@ export class SceneManager {
       matrix: part.mesh.matrix.toArray(),
       name: part.name,
       visible: part.mesh.visible,
+      material: part.materialOverride,
+      flatShading: part.flatShading,
     }
   }
 
@@ -612,15 +680,16 @@ export class SceneManager {
       if (this.sectionHelper) this.scene.add(this.sectionHelper)
     }
 
-    for (const set of Object.values(this.materials)) {
-      for (const mat of [set.main, set.back]) {
-        mat.clippingPlanes = planes
-        mat.clipShadows = true
-      }
-      // show the interior while cut open (no stencil caps yet)
-      if (!(set.main instanceof THREE.MeshBasicMaterial)) {
-        set.main.side = opts ? THREE.DoubleSide : THREE.FrontSide
-        set.main.needsUpdate = true
+    this.clipPlanes = planes
+    // apply to every built material (cache + the shared back overlay)
+    for (const mat of [...this.matCache.values(), this.backMaterial]) {
+      mat.clippingPlanes = planes
+      mat.clipShadows = true
+      // show the interior while cut open; otherwise restore the resting side
+      const base = (mat.userData.baseSide as THREE.Side) ?? THREE.FrontSide
+      if (!(mat instanceof THREE.MeshBasicMaterial)) {
+        mat.side = planes.length ? THREE.DoubleSide : base
+        mat.needsUpdate = true
       }
     }
   }
@@ -680,10 +749,9 @@ export class SceneManager {
 
   setDisplayMode(mode: DisplayMode) {
     this.displayMode = mode
-    const set = this.materials[mode]
+    // only parts following the global mode change; per-part overrides stay put
     for (const part of this.parts.values()) {
-      part.mesh.material = set.main
-      part.backMesh.visible = mode === 'backface'
+      if (part.materialOverride === null) this.applyPartMaterial(part)
     }
   }
 
@@ -932,6 +1000,9 @@ export class SceneManager {
     this.clearMeasurements()
     this.setSection(null)
     this.clearParts()
+    for (const mat of this.matCache.values()) mat.dispose()
+    this.matCache.clear()
+    this.backMaterial.dispose()
     this.composer?.dispose()
     this.controls.dispose()
     this.gizmo.dispose()

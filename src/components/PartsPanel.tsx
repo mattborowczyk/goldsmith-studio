@@ -1,8 +1,12 @@
 import { useState } from 'react'
 import { Boxes, ChevronDown, ChevronUp, Eye, EyeOff, Pencil, Trash2 } from 'lucide-react'
 import { getEngine } from '@/app/studio'
+import { MATERIAL_PRESETS } from '@/core/engine/materials'
+import type { MaterialPreset } from '@/core/types'
 import { useAppStore } from '@/store/appStore'
 import { Button } from '@/components/ui/button'
+import { Select } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 
 export function PartsPanel() {
@@ -74,12 +78,40 @@ export function PartsPanel() {
           ))}
 
           {selected && (
-            <div className="mt-1 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-              <div className="readout">
-                {selected.bbox.x.toFixed(2)} × {selected.bbox.y.toFixed(2)} ×{' '}
-                {selected.bbox.z.toFixed(2)} mm
+            <div className="mt-1 flex flex-col gap-2 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              <div>
+                <div className="readout">
+                  {selected.bbox.x.toFixed(2)} × {selected.bbox.y.toFixed(2)} ×{' '}
+                  {selected.bbox.z.toFixed(2)} mm
+                </div>
+                <div className="readout">{selected.triangles.toLocaleString()} triangles</div>
               </div>
-              <div className="readout">{selected.triangles.toLocaleString()} triangles</div>
+              <label className="flex flex-col gap-1 text-[10px]">
+                Material
+                <Select
+                  value={selected.material ?? ''}
+                  onChange={(e) =>
+                    getEngine().setPartMaterial(
+                      selected.id,
+                      (e.target.value || null) as MaterialPreset | null,
+                    )
+                  }
+                >
+                  <option value="">Auto (global)</option>
+                  {MATERIAL_PRESETS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px]">Flat shading (sharp facets)</span>
+                <Switch
+                  checked={selected.flatShading}
+                  onCheckedChange={(v) => getEngine().setPartFlatShading(selected.id, v)}
+                />
+              </div>
             </div>
           )}
         </div>

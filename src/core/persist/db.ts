@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import type { DisplayMode, MeshData } from '../types'
+import type { DisplayMode, MaterialPreset, MeshData } from '../types'
 import type { HistoryEntry, Material } from '../calc/materials'
 
 export interface SavedPart {
@@ -10,6 +10,9 @@ export interface SavedPart {
   positions: Float32Array
   indices: Uint32Array
   order: number
+  /** Per-part display material override; absent/null follows the global mode. */
+  material?: MaterialPreset | null
+  flatShading?: boolean
 }
 
 export interface SavedSettings {
@@ -56,7 +59,17 @@ export async function saveScene(parts: SavedPart[]): Promise<void> {
   await tx.done
 }
 
-export async function loadScene(): Promise<{ id: string; name: string; visible: boolean; matrix: number[]; data: MeshData }[]> {
+export async function loadScene(): Promise<
+  {
+    id: string
+    name: string
+    visible: boolean
+    matrix: number[]
+    data: MeshData
+    material: MaterialPreset | null
+    flatShading: boolean
+  }[]
+> {
   const db = await getDB()
   const parts = await db.getAll('parts')
   parts.sort((a, b) => a.order - b.order)
@@ -66,6 +79,8 @@ export async function loadScene(): Promise<{ id: string; name: string; visible: 
     visible: p.visible,
     matrix: p.matrix,
     data: { positions: p.positions, indices: p.indices },
+    material: p.material ?? null,
+    flatShading: p.flatShading ?? false,
   }))
 }
 

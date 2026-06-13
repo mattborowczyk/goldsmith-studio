@@ -1,58 +1,102 @@
 import * as THREE from 'three'
-import type { DisplayMode } from '../types'
+import type { MaterialPreset } from '../types'
 
-export interface DisplayMaterialSet {
-  main: THREE.Material
-  /** Shown only in 'backface' mode: paints inside faces red. */
-  back: THREE.Material
+/** Presets offered as a per-part display material (Auto = follow global). */
+export const MATERIAL_PRESETS: { id: MaterialPreset; label: string }[] = [
+  { id: 'gold', label: 'Polished gold' },
+  { id: 'silver', label: 'Polished silver' },
+  { id: 'studio', label: 'Neutral studio' },
+  { id: 'gem', label: 'Gemstone' },
+  { id: 'cutter', label: 'Cutter (tool)' },
+  { id: 'wireframe', label: 'Wireframe' },
+  { id: 'normals', label: 'Normals debug' },
+  { id: 'backface', label: 'Backface debug' },
+]
+
+/** Backface-debug overlay material (inside faces painted red); shared by all parts. */
+export function createBackMaterial(): THREE.Material {
+  return new THREE.MeshBasicMaterial({ color: 0xe53935, side: THREE.BackSide })
 }
 
-export function createMaterials(): Record<DisplayMode, DisplayMaterialSet> {
-  const back = new THREE.MeshBasicMaterial({
-    color: 0xe53935,
-    side: THREE.BackSide,
-  })
+/**
+ * Build the main material for one preset. `flat` selects faceted shading
+ * (per-face normals) — crisp gem facets vs. smoothed metal. Each instance
+ * records its resting `side` in userData so the section tool can restore it.
+ */
+export function createMaterial(preset: MaterialPreset, flat: boolean): THREE.Material {
+  const mat = buildMaterial(preset, flat)
+  mat.userData.baseSide = mat.side
+  return mat
+}
 
-  // Measured-ish metal albedos; RoomEnvironment provides realistic reflections
-  const gold = new THREE.MeshPhysicalMaterial({
-    color: 0xffd17a, // More accurate gold color
-    metalness: 1.0,
-    roughness: 0.12,
-    clearcoat: 0.3,
-    clearcoatRoughness: 0.05,
-    envMapIntensity: 1.5,
-  })
-  const silver = new THREE.MeshPhysicalMaterial({
-    color: 0xffffff, // Silver is highly reflective white
-    metalness: 1.0,
-    roughness: 0.10,
-    clearcoat: 0.3,
-    clearcoatRoughness: 0.05,
-    envMapIntensity: 1.5,
-  })
-  const studio = new THREE.MeshStandardMaterial({
-    color: 0x9aa0a8,
-    metalness: 0.1,
-    roughness: 0.55,
-  })
-  const wireframe = new THREE.MeshBasicMaterial({
-    color: 0xc9a554,
-    wireframe: true,
-  })
-  const normals = new THREE.MeshNormalMaterial()
-  const backfaceFront = new THREE.MeshStandardMaterial({
-    color: 0x9aa0a8,
-    metalness: 0.05,
-    roughness: 0.7,
-    side: THREE.FrontSide,
-  })
-
-  return {
-    gold: { main: gold, back },
-    silver: { main: silver, back },
-    studio: { main: studio, back },
-    wireframe: { main: wireframe, back },
-    normals: { main: normals, back },
-    backface: { main: backfaceFront, back },
+function buildMaterial(preset: MaterialPreset, flatShading: boolean): THREE.Material {
+  switch (preset) {
+    case 'gold':
+      return new THREE.MeshPhysicalMaterial({
+        color: 0xffd17a,
+        metalness: 1.0,
+        roughness: 0.12,
+        clearcoat: 0.3,
+        clearcoatRoughness: 0.05,
+        envMapIntensity: 1.5,
+        flatShading,
+      })
+    case 'silver':
+      return new THREE.MeshPhysicalMaterial({
+        color: 0xffffff,
+        metalness: 1.0,
+        roughness: 0.1,
+        clearcoat: 0.3,
+        clearcoatRoughness: 0.05,
+        envMapIntensity: 1.5,
+        flatShading,
+      })
+    case 'studio':
+      return new THREE.MeshStandardMaterial({
+        color: 0x9aa0a8,
+        metalness: 0.1,
+        roughness: 0.55,
+        flatShading,
+      })
+    case 'gem':
+      // clear, brilliant stone — translucent + crisp facets so it reads as a
+      // gemstone distinct from the metal jewellery
+      return new THREE.MeshPhysicalMaterial({
+        color: 0xeaf4ff,
+        metalness: 0,
+        roughness: 0.02,
+        ior: 2.4,
+        clearcoat: 1,
+        clearcoatRoughness: 0,
+        envMapIntensity: 2.2,
+        transparent: true,
+        opacity: 0.82,
+        side: THREE.DoubleSide,
+        flatShading,
+      })
+    case 'cutter':
+      // translucent red "negative" — the CAD convention for a boolean tool
+      return new THREE.MeshPhysicalMaterial({
+        color: 0xff4d4d,
+        metalness: 0,
+        roughness: 0.4,
+        transparent: true,
+        opacity: 0.4,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        flatShading,
+      })
+    case 'wireframe':
+      return new THREE.MeshBasicMaterial({ color: 0xc9a554, wireframe: true })
+    case 'normals':
+      return new THREE.MeshNormalMaterial({ flatShading })
+    case 'backface':
+      return new THREE.MeshStandardMaterial({
+        color: 0x9aa0a8,
+        metalness: 0.05,
+        roughness: 0.7,
+        side: THREE.FrontSide,
+        flatShading,
+      })
   }
 }
