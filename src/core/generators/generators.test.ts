@@ -47,7 +47,9 @@ describe('gemstone generator', () => {
       const report = analyzeMesh(mesh)
       expect(report.shells, cut.id).toBe(1)
       expect(report.watertight, cut.id).toBe(true)
-      expect(report.volume, cut.id).toBeGreaterThan(0)
+      expect(report.invertedShells, cut.id).toBe(0)
+      // signed (not absolute) volume catches winding/inversion regressions
+      expect(signedVolume(mesh), cut.id).toBeGreaterThan(0)
     }
   })
 
@@ -55,6 +57,8 @@ describe('gemstone generator', () => {
     const params = { cut: 'round' as const, length: 6, width: 6, height: null }
     const gem = signedVolume(generateGem(params))
     const cutter = signedVolume(generateGemCutter(params, 0.08))
+    expect(gem).toBeGreaterThan(0)
+    expect(cutter).toBeGreaterThan(0)
     expect(cutter).toBeGreaterThan(gem)
   })
 })

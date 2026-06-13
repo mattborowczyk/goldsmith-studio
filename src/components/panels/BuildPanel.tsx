@@ -384,7 +384,12 @@ function TextSection() {
           type="file"
           accept=".ttf,.otf"
           className="hidden"
-          onChange={(e) => e.target.files?.[0] && void onUpload(e.target.files[0])}
+          onChange={(e) => {
+            const file = e.currentTarget.files?.[0]
+            if (file) void onUpload(file)
+            // reset so re-selecting the same file (e.g. after a parse error) fires onChange again
+            e.currentTarget.value = ''
+          }}
         />
       </div>
       <div className="flex gap-2">

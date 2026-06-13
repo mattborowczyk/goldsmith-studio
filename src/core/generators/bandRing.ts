@@ -156,12 +156,15 @@ function blendValue(
   top: number, shoulder: number, mid: number,
   smooth: boolean,
 ): number {
+  // Keep the shoulder strictly between top (α=0) and bottom (α=180) so both end
+  // sections stay reachable even when shoulderDeg is set to an extreme (0 or 180).
+  const s = Math.min(Math.max(shoulderDeg, 1e-6), 180 - 1e-6)
   const ease = (x: number) => (smooth ? x * x * (3 - 2 * x) : x)
-  if (alphaDeg <= shoulderDeg) {
-    const x = ease(alphaDeg / Math.max(shoulderDeg, 1e-6))
+  if (alphaDeg < s) {
+    const x = ease(alphaDeg / s)
     return top + (shoulder - top) * x
   }
-  const x = ease((alphaDeg - shoulderDeg) / Math.max(180 - shoulderDeg, 1e-6))
+  const x = ease((alphaDeg - s) / (180 - s))
   return shoulder + (mid - shoulder) * x
 }
 

@@ -55,7 +55,11 @@ export function restOnGround(mesh: MeshData): MeshData {
  */
 export function meshFromTorusGrid(rows: Vec3[][]): MeshData {
   const R = rows.length
-  const M = rows[0].length
+  const M = rows[0]?.length ?? 0
+  if (R < 3 || M < 3) throw new Error('meshFromTorusGrid needs ≥3 rows of ≥3 points')
+  if (rows.some((row) => row.length !== M)) {
+    throw new Error('meshFromTorusGrid needs all rows the same length')
+  }
   const positions = new Float32Array(R * M * 3)
   for (let i = 0; i < R; i++) {
     for (let j = 0; j < M; j++) {
@@ -97,7 +101,11 @@ export type LoftCap = Vec3 | 'fan'
  */
 export function loftLoops(layers: Vec3[][], bottom: LoftCap, top: LoftCap): MeshData {
   const L = layers.length
-  const M = layers[0].length
+  const M = layers[0]?.length ?? 0
+  if (L < 2 || M < 3) throw new Error('loftLoops needs ≥2 layers of ≥3 points')
+  if (layers.some((layer) => layer.length !== M)) {
+    throw new Error('loftLoops needs all layers the same length')
+  }
   const verts: number[] = []
   for (const layer of layers) {
     for (const v of layer) verts.push(v[0], v[1], v[2])
@@ -148,6 +156,8 @@ export function loftLoops(layers: Vec3[][], bottom: LoftCap, top: LoftCap): Mesh
 
 /** Solid cylinder along Y, base at y = 0 — used for ring sizer gauges. */
 export function makeCylinder(radius: number, height: number, segments = 96): MeshData {
+  if (!(radius > 0) || !(height > 0)) throw new Error('makeCylinder needs radius > 0 and height > 0')
+  if (!Number.isInteger(segments) || segments < 3) throw new Error('makeCylinder needs ≥3 segments')
   const loopAt = (y: number): Vec3[] => {
     const pts: Vec3[] = []
     for (let i = 0; i < segments; i++) {

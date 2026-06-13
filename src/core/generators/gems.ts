@@ -62,7 +62,9 @@ export function gemCutInfo(cut: GemCut): GemCutInfo {
 }
 
 export function gemDefaultHeight(cut: GemCut, length: number, width: number): number {
-  return gemCutInfo(cut).depthRatio * Math.min(length, width)
+  // depthRatio is width-based (gemology depth %); callers pass the effective width
+  void length
+  return gemCutInfo(cut).depthRatio * width
 }
 
 // ---------- girdle outlines (unit shapes; normalized to L × W afterwards) ----------
