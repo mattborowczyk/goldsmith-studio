@@ -17,7 +17,7 @@ const TABS: { id: WorkflowTab; label: string; icon: React.ElementType; enabled: 
   { id: 'import', label: 'Import', icon: FolderInput, enabled: true },
   { id: 'repair', label: 'Repair', icon: Wrench, enabled: true },
   { id: 'measure', label: 'Measure', icon: Ruler, enabled: true },
-  { id: 'build', label: 'Build', icon: Shapes, enabled: false },
+  { id: 'build', label: 'Build', icon: Shapes, enabled: true },
   { id: 'resize', label: 'Resize', icon: Scaling, enabled: false },
   { id: 'fit', label: 'Fit', icon: Smile, enabled: false },
   { id: 'cost', label: 'Cost', icon: Coins, enabled: true },
