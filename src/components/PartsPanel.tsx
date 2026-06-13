@@ -106,8 +106,11 @@ export function PartsPanel() {
                 </Select>
               </label>
               <div className="flex items-center justify-between">
-                <span className="text-[10px]">Flat shading (sharp facets)</span>
+                <span id={`flat-shading-${selected.id}`} className="text-[10px]">
+                  Flat shading (sharp facets)
+                </span>
                 <Switch
+                  aria-labelledby={`flat-shading-${selected.id}`}
                   checked={selected.flatShading}
                   onCheckedChange={(v) => getEngine().setPartFlatShading(selected.id, v)}
                 />

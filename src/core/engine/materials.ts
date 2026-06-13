@@ -98,5 +98,14 @@ function buildMaterial(preset: MaterialPreset, flatShading: boolean): THREE.Mate
         side: THREE.FrontSide,
         flatShading,
       })
+    default:
+      // Safety net for a stale/invalid persisted preset — fall back to studio
+      // so session restore can never crash on an unknown value.
+      return new THREE.MeshStandardMaterial({
+        color: 0x9aa0a8,
+        metalness: 0.1,
+        roughness: 0.55,
+        flatShading,
+      })
   }
 }

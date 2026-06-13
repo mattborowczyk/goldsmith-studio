@@ -685,9 +685,11 @@ export class SceneManager {
     for (const mat of [...this.matCache.values(), this.backMaterial]) {
       mat.clippingPlanes = planes
       mat.clipShadows = true
-      // show the interior while cut open; otherwise restore the resting side
+      // show the interior while cut open; otherwise restore the resting side.
+      // Only the back overlay is excluded — it must stay BackSide; the wireframe
+      // preset (also MeshBasicMaterial) should still toggle.
       const base = (mat.userData.baseSide as THREE.Side) ?? THREE.FrontSide
-      if (!(mat instanceof THREE.MeshBasicMaterial)) {
+      if (mat !== this.backMaterial) {
         mat.side = planes.length ? THREE.DoubleSide : base
         mat.needsUpdate = true
       }
