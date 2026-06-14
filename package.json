@@ -23,6 +23,7 @@
     "lucide-react": "^1.18.0",
     "manifold-3d": "^3.5.1",
     "n8ao": "^1.10.2",
+    "pdf-lib": "^1.17.1",
     "postprocessing": "^6.39.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",

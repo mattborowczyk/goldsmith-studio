@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import {
   BloomEffect,
@@ -28,6 +29,7 @@ import type {
   ViewPreset,
 } from '../types'
 import { anglePointOnRing, pointAngleDeg } from '../geometry/resize'
+import type { NamedMesh } from '../io/exporters'
 import { createBackMaterial, createMaterial } from './materials'
 import { createBackgroundTexture, createStudioEnvironment } from './environment'
 
@@ -1150,6 +1152,45 @@ export class SceneManager {
     this.composer?.setSize(w, h)
     hidden.forEach((o, i) => (o.visible = prevVisible[i]))
     return url
+  }
+
+  // ---------- mesh export (plan §2.7) ----------
+
+  /**
+   * GLB/GLTF export. Lives behind the facade because GLTFExporter needs THREE
+   * objects; STL/OBJ stay pure in core/io/exporters. Builds a throwaway scene
+   * from the given (already world-space, shrinkage-applied) meshes so the result
+   * is independent of display materials and viewport state. `binary` → GLB
+   * ArrayBuffer, otherwise a pretty-printed glTF JSON string.
+   */
+  exportGLTF(parts: NamedMesh[], opts: { binary: boolean }): Promise<ArrayBuffer | string> {
+    const root = new THREE.Group()
+    const material = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.0, roughness: 0.6 })
+    for (const { name, mesh } of parts) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(mesh.positions.slice(), 3))
+      geo.setIndex(new THREE.BufferAttribute(mesh.indices.slice(), 1))
+      geo.computeVertexNormals()
+      const m = new THREE.Mesh(geo, material)
+      m.name = name
+      root.add(m)
+    }
+    return new Promise((resolve, reject) => {
+      new GLTFExporter().parse(
+        root,
+        (result) => {
+          root.traverse((o) => (o as THREE.Mesh).geometry?.dispose())
+          material.dispose()
+          resolve(result as ArrayBuffer | string)
+        },
+        (err) => {
+          root.traverse((o) => (o as THREE.Mesh).geometry?.dispose())
+          material.dispose()
+          reject(err instanceof Error ? err : new Error(String(err)))
+        },
+        { binary: opts.binary },
+      )
+    })
   }
 
   // ---------- loop & lifecycle ----------

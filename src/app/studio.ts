@@ -27,6 +27,23 @@ import {
 } from '@/core/calc/materials'
 import { fetchSpotPricesPerGram, type Currency } from '@/core/calc/spotPrices'
 import { analyzeRingFrame, estimateInnerDiameter, volumeAndArea } from '@/core/geometry/measure'
+import {
+  exportOBJ,
+  exportSTL,
+  mergeMeshData,
+  scaleMeshDataCopy,
+  type MeshFormat,
+  type NamedMesh,
+} from '@/core/io/exporters'
+import {
+  buildReportModel,
+  reportToText,
+  type GemListEntry,
+  type ReportBranding,
+  type ReportInput,
+  type ReportPartInput,
+} from '@/core/report/reportModel'
+import { buildReportPDF } from '@/core/report/pdf'
 import { detectHeadAngleDeg, pointAngleDeg, resizeRing } from '@/core/geometry/resize'
 import { diameterToSize, sizeToDiameter, ukLabel, type SizeSystem } from '@/core/generators/ringSizes'
 import type {
@@ -41,7 +58,7 @@ import type {
   Vec3,
 } from '@/core/types'
 import { HEAL_PRESETS, UNIT_TO_MM } from '@/core/types'
-import { useAppStore, type CostSettings, type SectionState } from '@/store/appStore'
+import { useAppStore, type CostSettings, type DeliverState, type SectionState } from '@/store/appStore'
 
 /**
  * Application controller: owns the SceneManager singleton and orchestrates
@@ -86,6 +103,7 @@ export function initEngine(container: HTMLElement): SceneManager {
 
   void restoreSession()
   void initCostData()
+  void initDeliverData()
   store.setParts(engine.listParts())
   return engine
 }
@@ -351,6 +369,29 @@ function downloadDataURL(url: string, prefix: string) {
   a.href = url
   a.download = `${prefix}-${new Date().toISOString().slice(0, 19).replaceAll(':', '-')}.png`
   a.click()
+}
+
+/** Trigger a download of arbitrary bytes/text as a named file. */
+function downloadBlob(data: Uint8Array | ArrayBuffer | string, filename: string, mime: string) {
+  const url = URL.createObjectURL(new Blob([data as BlobPart], { type: mime }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/** Strip the `data:...;base64,` prefix and decode to bytes (for PDF embedding). */
+function dataURLtoBytes(url: string): Uint8Array {
+  const base64 = url.slice(url.indexOf(',') + 1)
+  const bin = atob(base64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return bytes
+}
+
+function safeFilename(name: string): string {
+  return name.trim().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'goldsmith'
 }
 
 // ---------- cost: materials, weight, history (plan §2.4) ----------
@@ -923,4 +964,227 @@ export function undoResize(): void {
 export function teardownResize() {
   if (pickConsumer === 'resize') setResizePicking(false)
   engine?.setResizeOverlay(null)
+}
+
+// ---------- export & reports (plan §2.7) ----------
+
+const KV_BRANDING = 'reportBranding'
+const KV_REPORT_PREFS = 'reportPrefs'
+
+/** Durable report/export preferences (branding lives in its own KV record). */
+interface ReportPrefs {
+  template: DeliverState['template']
+  labourRate: number
+  billing: DeliverState['billing']
+  showMetalPrices: boolean
+  exportFormat: MeshFormat
+  exportScope: 'merged' | 'per-part'
+  applyShrinkage: boolean
+  shrinkagePct: number
+}
+
+async function initDeliverData() {
+  try {
+    const [branding, prefs] = await Promise.all([
+      kvGet<ReportBranding>(KV_BRANDING),
+      kvGet<ReportPrefs>(KV_REPORT_PREFS),
+    ])
+    const patch: Partial<DeliverState> = {}
+    if (branding) patch.branding = branding
+    if (prefs) Object.assign(patch, prefs)
+    if (Object.keys(patch).length) useAppStore.getState().patchDeliver(patch)
+  } catch (err) {
+    console.warn('Deliver data init failed', err)
+  }
+}
+
+function persistReportPrefs() {
+  const d = useAppStore.getState().deliver
+  const prefs: ReportPrefs = {
+    template: d.template,
+    labourRate: d.labourRate,
+    billing: d.billing,
+    showMetalPrices: d.showMetalPrices,
+    exportFormat: d.exportFormat,
+    exportScope: d.exportScope,
+    applyShrinkage: d.applyShrinkage,
+    shrinkagePct: d.shrinkagePct,
+  }
+  void kvSet(KV_REPORT_PREFS, prefs)
+}
+
+/** Patch the deliver slice; durable prefs are written through to IndexedDB. */
+export function patchDeliver(patch: Partial<DeliverState>) {
+  useAppStore.getState().patchDeliver(patch)
+  persistReportPrefs()
+}
+
+export function setBranding(patch: Partial<ReportBranding>) {
+  const branding = { ...useAppStore.getState().deliver.branding, ...patch }
+  useAppStore.getState().patchDeliver({ branding })
+  void kvSet(KV_BRANDING, branding)
+}
+
+/** Read an uploaded logo file as a data-URL and store it in branding. */
+export function setLogoFromFile(file: File): void {
+  const reader = new FileReader()
+  reader.onload = () => {
+    if (typeof reader.result === 'string') setBranding({ logo: reader.result })
+  }
+  reader.readAsDataURL(file)
+}
+
+/** World-space meshes for every part, optionally on a shrinkage-scaled copy. */
+function preparedMeshes(): NamedMesh[] {
+  const eng = getEngine()
+  const d = useAppStore.getState().deliver
+  const factor = d.applyShrinkage ? 1 + d.shrinkagePct / 100 : 1
+  const out: NamedMesh[] = []
+  for (const info of eng.listParts()) {
+    const mesh = eng.getWorldMeshData(info.id)
+    if (!mesh) continue
+    out.push({ name: info.name, mesh: factor === 1 ? mesh : scaleMeshDataCopy(mesh, factor) })
+  }
+  return out
+}
+
+const MESH_MIME: Record<MeshFormat, string> = {
+  stl: 'model/stl',
+  obj: 'text/plain',
+  glb: 'model/gltf-binary',
+}
+
+/** Export the scene as STL / OBJ / GLB, merged or one file per part (§2.7). */
+export async function exportMesh(): Promise<void> {
+  const store = useAppStore.getState()
+  const d = store.deliver
+  const prepared = preparedMeshes()
+  if (!prepared.length) {
+    store.patchDeliver({ error: 'Nothing to export — import or generate a part first.' })
+    return
+  }
+  store.patchDeliver({ exporting: true, error: null })
+  const base = safeFilename(d.title || 'goldsmith-export')
+  const mime = MESH_MIME[d.exportFormat]
+  try {
+    const files: NamedMesh[] = d.exportScope === 'merged'
+      ? [{ name: base, mesh: mergeMeshData(prepared.map((p) => p.mesh)) }]
+      : prepared
+    for (const file of files) {
+      const fname = `${safeFilename(file.name)}.${d.exportFormat}`
+      if (d.exportFormat === 'stl') {
+        downloadBlob(exportSTL(file.mesh), fname, mime)
+      } else if (d.exportFormat === 'obj') {
+        downloadBlob(exportOBJ([file]), fname, mime)
+      } else {
+        const glb = await getEngine().exportGLTF([file], { binary: true })
+        downloadBlob(glb, fname, mime)
+      }
+    }
+    useAppStore.getState().patchDeliver({ exporting: false })
+  } catch (err) {
+    useAppStore.getState().patchDeliver({
+      exporting: false,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
+}
+
+/** Group gem-tagged parts (names like "Round 6.0mm") into cut/size/qty lines. */
+function deriveGemList(): GemListEntry[] {
+  const groups = new Map<string, GemListEntry>()
+  for (const info of useAppStore.getState().parts) {
+    if (info.material !== 'gem') continue
+    const match = /^(.*?)\s+([\d.]+)\s*mm$/i.exec(info.name)
+    const cut = match ? match[1].trim() : info.name
+    const sizeMm = match ? match[2] : '—'
+    const key = `${cut}|${sizeMm}`
+    const entry = groups.get(key) ?? { cut, sizeMm, qty: 0 }
+    entry.qty += 1
+    groups.set(key, entry)
+  }
+  return [...groups.values()]
+}
+
+/** Gather scene + cost + report-form state into a pure ReportInput. */
+function buildReportInputFromState(): ReportInput {
+  const s = useAppStore.getState()
+  const { cost, deliver } = s
+  const eng = getEngine()
+  const parts: ReportPartInput[] = []
+  for (const info of eng.listParts()) {
+    // gems are listed separately; cutters are boolean tools, not deliverables
+    if (info.material === 'gem' || info.material === 'cutter') continue
+    const mesh = eng.getWorldMeshData(info.id)
+    const va = mesh ? volumeAndArea(mesh) : { volume: 0, area: 0 }
+    const material = cost.materials.find((m) => m.id === cost.assignments[info.id])
+    parts.push({
+      name: info.name,
+      materialName: material?.name ?? null,
+      density: material?.density ?? null,
+      pricePerGram: material?.pricePerGram ?? 0,
+      volumeMm3: va.volume,
+      areaMm2: va.area,
+      bbox: [info.bbox.x, info.bbox.y, info.bbox.z],
+    })
+  }
+  const bounds = eng.getSceneBounds()
+  const sceneBbox = bounds
+    ? ([
+        bounds.max[0] - bounds.min[0],
+        bounds.max[1] - bounds.min[1],
+        bounds.max[2] - bounds.min[2],
+      ] as Vec3)
+    : null
+  return {
+    template: deliver.template,
+    branding: deliver.branding,
+    title: deliver.title,
+    date: new Date().toISOString(),
+    currency: cost.settings.currency,
+    lossFactorPct: cost.settings.lossFactorPct,
+    labour: { hours: deliver.labourHours, rate: deliver.labourRate, billing: deliver.billing },
+    showMetalPrices: deliver.showMetalPrices,
+    notes: deliver.notes,
+    parts,
+    gems: deriveGemList(),
+    sceneBbox,
+  }
+}
+
+/** Build the branded PDF report (auto viewport snapshot + logo) and download it. */
+export async function generateReportPDF(): Promise<void> {
+  const store = useAppStore.getState()
+  if (store.parts.length === 0) {
+    store.patchDeliver({ error: 'Nothing to report — import or generate a part first.' })
+    return
+  }
+  store.patchDeliver({ generating: true, error: null })
+  try {
+    const model = buildReportModel(buildReportInputFromState())
+    const render = dataURLtoBytes(getEngine().renderPreviewPNG(1600))
+    const logo = model.branding.logo ? dataURLtoBytes(model.branding.logo) : undefined
+    const bytes = await buildReportPDF(model, { render, logo })
+    const base = safeFilename(store.deliver.title || 'goldsmith')
+    downloadBlob(bytes, `${base}-${model.template}.pdf`, 'application/pdf')
+    useAppStore.getState().patchDeliver({ generating: false })
+  } catch (err) {
+    useAppStore.getState().patchDeliver({
+      generating: false,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
+}
+
+/** Copy the plain-text version of the current report to the clipboard. */
+export async function copyReportText(): Promise<void> {
+  const store = useAppStore.getState()
+  try {
+    const model = buildReportModel(buildReportInputFromState())
+    await navigator.clipboard.writeText(reportToText(model))
+    store.patchDeliver({ copied: true, error: null })
+    setTimeout(() => useAppStore.getState().patchDeliver({ copied: false }), 1500)
+  } catch (err) {
+    store.patchDeliver({ error: err instanceof Error ? err.message : String(err) })
+  }
 }

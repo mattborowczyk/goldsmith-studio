@@ -17,6 +17,12 @@ import { HEAL_PRESETS } from '@/core/types'
 import type { HistoryEntry, Material } from '@/core/calc/materials'
 import type { Currency } from '@/core/calc/spotPrices'
 import type { SizeSystem } from '@/core/generators/ringSizes'
+import type {
+  BillingIncrement,
+  ReportBranding,
+  ReportTemplate,
+} from '@/core/report/reportModel'
+import type { MeshFormat } from '@/core/io/exporters'
 
 export interface RepairState {
   /** Per-part revision stack for non-destructive heal undo. */
@@ -98,6 +104,29 @@ export interface ResizeState {
   error: string | null
 }
 
+/** Deliver tab: mesh export + branded report generation (plan §2.7). */
+export interface DeliverState {
+  // mesh export
+  exportFormat: MeshFormat
+  exportScope: 'merged' | 'per-part'
+  applyShrinkage: boolean
+  shrinkagePct: number
+  exporting: boolean
+  // report
+  template: ReportTemplate
+  title: string
+  branding: ReportBranding
+  labourHours: number
+  labourRate: number
+  billing: BillingIncrement
+  showMetalPrices: boolean
+  notes: string
+  generating: boolean
+  /** Transient flag for the "copied!" affordance on the clipboard button. */
+  copied: boolean
+  error: string | null
+}
+
 interface AppState {
   tab: WorkflowTab
   parts: PartInfo[]
@@ -116,6 +145,7 @@ interface AppState {
   cost: CostState
   measure: MeasureState
   resize: ResizeState
+  deliver: DeliverState
 
   setTab: (tab: WorkflowTab) => void
   setParts: (parts: PartInfo[]) => void
@@ -134,6 +164,7 @@ interface AppState {
   patchMeasure: (patch: Partial<MeasureState>) => void
   patchSection: (patch: Partial<SectionState>) => void
   patchResize: (patch: Partial<ResizeState>) => void
+  patchDeliver: (patch: Partial<DeliverState>) => void
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -202,6 +233,24 @@ export const useAppStore = create<AppState>((set) => ({
     canUndo: false,
     error: null,
   },
+  deliver: {
+    exportFormat: 'stl',
+    exportScope: 'merged',
+    applyShrinkage: false,
+    shrinkagePct: 1.75,
+    exporting: false,
+    template: 'quote',
+    title: '',
+    branding: { businessName: '', contact: '', logo: '' },
+    labourHours: 0,
+    labourRate: 0,
+    billing: '15min',
+    showMetalPrices: false,
+    notes: '',
+    generating: false,
+    copied: false,
+    error: null,
+  },
 
   setTab: (tab) => set({ tab }),
   setParts: (parts) => set({ parts }),
@@ -221,4 +270,5 @@ export const useAppStore = create<AppState>((set) => ({
   patchSection: (patch) =>
     set((s) => ({ measure: { ...s.measure, section: { ...s.measure.section, ...patch } } })),
   patchResize: (patch) => set((s) => ({ resize: { ...s.resize, ...patch } })),
+  patchDeliver: (patch) => set((s) => ({ deliver: { ...s.deliver, ...patch } })),
 }))
