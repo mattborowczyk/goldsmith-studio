@@ -46,7 +46,7 @@ export function Viewport() {
           <div className="flex flex-col items-center gap-3 text-center">
             <FolderOpen className="size-10 text-muted-foreground/60" />
             <p className="text-base text-muted-foreground">
-              Drop an STL, OBJ or GLB here
+              Drop an STL, OBJ, GLB, PLY or 3MF here
               <br />
               <span className="text-sm text-muted-foreground/70">
                 or use the Import panel to pick a file

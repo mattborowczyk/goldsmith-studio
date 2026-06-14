@@ -1,12 +1,17 @@
 import { useEffect } from 'react'
-import { Circle, PenTool, Ruler, Trash2, Undo2 } from 'lucide-react'
+import { Circle, Loader2, PenTool, Ruler, Thermometer, Trash2, Undo2, X } from 'lucide-react'
 import {
+  cancelThicknessHeatmap,
   clearAllMeasurements,
+  clearThicknessHeatmap,
+  computeThicknessHeatmap,
   detectInnerDiameter,
   draftingView,
   removeMeasurementById,
+  setHeatmapThreshold,
   setMeasureColor,
   setMeasurePicking,
+  teardownHeatmap,
   undoLastMeasurement,
   updateSection,
 } from '@/app/studio'
@@ -204,13 +209,93 @@ function SectionControls() {
   )
 }
 
+/** The ramp the engine paints: red (thin) → green → blue (thick). */
+const HEATMAP_GRADIENT =
+  'linear-gradient(to right, rgb(235,33,33), rgb(77,191,51), rgb(31,51,235))'
+
+function HeatmapSection() {
+  const heatmap = useAppStore((s) => s.measure.heatmap)
+  const parts = useAppStore((s) => s.parts)
+  const thresholdMax = Math.max(heatmap.range?.max ?? 0, heatmap.thresholdMm, 2)
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border/60 pt-3">
+      <span className="text-xs font-medium text-muted-foreground">Wall-thickness heatmap</span>
+      <p className="text-[11px] text-muted-foreground">
+        Colours the surface by local wall thickness — the #1 printability check.
+      </p>
+
+      {heatmap.busy ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" />
+            <span className="flex-1">Casting rays… {Math.round(heatmap.progress * 100)}%</span>
+          </div>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div className="h-full bg-primary transition-all" style={{ width: `${heatmap.progress * 100}%` }} />
+          </div>
+          <Button variant="secondary" size="sm" onClick={cancelThicknessHeatmap}>
+            <X /> Cancel
+          </Button>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <Button
+            className="flex-1"
+            variant={heatmap.enabled ? 'default' : 'secondary'}
+            disabled={parts.length === 0}
+            onClick={() => void computeThicknessHeatmap()}
+          >
+            <Thermometer />
+            {heatmap.enabled ? 'Recompute' : 'Run heatmap'}
+          </Button>
+          {heatmap.enabled && (
+            <Button variant="ghost" size="icon" title="Clear heatmap" onClick={clearThicknessHeatmap}>
+              <Trash2 />
+            </Button>
+          )}
+        </div>
+      )}
+
+      {heatmap.enabled && heatmap.range && (
+        <>
+          <label className="text-xs text-muted-foreground">
+            Min thickness alarm{' '}
+            <span className="readout text-foreground">{heatmap.thresholdMm.toFixed(2)} mm</span>
+            <Slider
+              min={0}
+              max={thresholdMax}
+              step={0.05}
+              value={[heatmap.thresholdMm]}
+              onValueChange={([mm]) => setHeatmapThreshold(mm)}
+            />
+          </label>
+          <div className="h-2.5 w-full rounded-full" style={{ background: HEATMAP_GRADIENT }} />
+          <div className="flex justify-between text-[10px] text-muted-foreground">
+            <span>{heatmap.range.min.toFixed(2)} mm · thin</span>
+            <span>{heatmap.range.max.toFixed(2)} mm · thick</span>
+          </div>
+          <p className="text-[10px] text-muted-foreground/70">
+            Walls at or under the threshold are flagged solid red.
+          </p>
+        </>
+      )}
+
+      {heatmap.error && (
+        <p className="rounded-lg bg-destructive/15 px-3 py-2 text-xs text-destructive">{heatmap.error}</p>
+      )}
+    </div>
+  )
+}
+
 export function MeasurePanel() {
   const picking = useAppStore((s) => s.measure.picking)
 
-  // disarm pick mode when the panel unmounts (tab switch)
+  // disarm pick mode + tear down the heatmap when the panel unmounts (tab switch)
   useEffect(() => {
     return () => {
       if (useAppStore.getState().measure.picking) setMeasurePicking(false)
+      teardownHeatmap()
     }
   }, [])
   void picking
@@ -219,6 +304,7 @@ export function MeasurePanel() {
     <div className="flex flex-col gap-3">
       <DimensionsSection />
       <InspectSection />
+      <HeatmapSection />
       <SectionControls />
 
       <div className="flex flex-col gap-2 border-t border-border/60 pt-3">

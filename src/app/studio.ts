@@ -1,6 +1,7 @@
 import { SceneManager } from '@/core/engine/SceneManager'
 import { importFile, scaleMeshData } from '@/core/io/importers'
 import { repairClient } from '@/core/geometry/repairClient'
+import { thicknessClient, type ThicknessJob } from '@/core/geometry/thicknessClient'
 import {
   addHistoryEntries,
   clearHistoryStore,
@@ -33,7 +34,9 @@ import {
 import { fetchSpotPricesPerGram, type Currency } from '@/core/calc/spotPrices'
 import { analyzeRingFrame, estimateInnerDiameter, volumeAndArea } from '@/core/geometry/measure'
 import {
+  export3MF,
   exportOBJ,
+  exportPLY,
   exportSTL,
   mergeMeshData,
   scaleMeshDataCopy,
@@ -78,6 +81,8 @@ let nextPartNum = 1
 let pickConsumer: 'measure' | 'resize' | null = null
 /** Non-destructive heal/resize: previous geometry+transform per part, newest last. */
 const revisions = new Map<string, { data: MeshData; matrix: number[] }[]>()
+/** In-flight wall-thickness compute, so the UI can cancel it. */
+let thicknessJob: ThicknessJob | null = null
 
 export function getEngine(): SceneManager {
   if (!engine) throw new Error('Engine not initialized')
@@ -95,9 +100,15 @@ export function initEngine(container: HTMLElement): SceneManager {
   const store = useAppStore.getState()
 
   engine.on('partsChanged', () => {
-    useAppStore.getState().setParts(engine!.listParts())
+    const s = useAppStore.getState()
+    s.setParts(engine!.listParts())
+    // the engine drops its heatmap when the painted part is removed/replaced;
+    // reconcile the store so the Measure panel doesn't show a stale overlay
+    if (s.measure.heatmap.enabled && !engine!.hasThicknessHeatmap()) {
+      s.patchHeatmap({ enabled: false, busy: false, progress: 0, range: null, partId: null, error: null })
+    }
     scheduleAutosave()
-    if (useAppStore.getState().tab === 'cost') scheduleVolumeRecompute()
+    if (s.tab === 'cost') scheduleVolumeRecompute()
   })
   engine.on('selectionChanged', (id) => {
     useAppStore.getState().setSelected(id)
@@ -137,7 +148,7 @@ export async function importFiles(
       const parts = await importFile(file)
       for (const part of parts) {
         const data = scaleMeshData(part.data, factor)
-        eng.addPart(newPartId(), part.name, data)
+        eng.addPart(newPartId(), part.name, data, undefined, undefined, part.colors)
       }
     }
     eng.fitToView()
@@ -288,6 +299,7 @@ async function persistScene() {
       order,
       material: saved.material,
       flatShading: saved.flatShading,
+      colors: saved.colors,
     })
   })
   try {
@@ -324,10 +336,11 @@ async function restoreSession() {
       applyAccent(accent)
     }
     for (const p of parts) {
-      engine.addPart(p.id, p.name, p.data, p.matrix, {
-        material: p.material,
-        flatShading: p.flatShading,
-      })
+      engine.addPart(
+        p.id, p.name, p.data, p.matrix,
+        { material: p.material, flatShading: p.flatShading },
+        p.colors ?? undefined,
+      )
       engine.setPartVisible(p.id, p.visible)
     }
     if (parts.length) engine.fitToView()
@@ -707,6 +720,83 @@ export function updateSection(patch: Partial<SectionState>) {
   )
 }
 
+// ---------- wall-thickness heatmap (plan §2.3) ----------
+
+/**
+ * Compute the wall-thickness field for the selected (or only) part in a worker,
+ * streaming progress, then paint it onto the surface. The heavy raycast never
+ * blocks the UI and can be cancelled mid-run via cancelThicknessHeatmap.
+ */
+export async function computeThicknessHeatmap(): Promise<void> {
+  const store = useAppStore.getState()
+  const id = store.selectedId ?? (store.parts.length === 1 ? store.parts[0].id : null)
+  if (!id) {
+    store.patchHeatmap({ error: 'Select a part first (tap it in the viewport or the parts list).' })
+    return
+  }
+  const eng = getEngine()
+  const mesh = eng.getWorldMeshData(id)
+  if (!mesh) return
+  thicknessJob?.cancel()
+  store.patchHeatmap({ busy: true, progress: 0, error: null, partId: id })
+  const job = thicknessClient.compute(mesh, (p) =>
+    useAppStore.getState().patchHeatmap({ progress: p }),
+  )
+  thicknessJob = job
+  try {
+    const field = await job.promise
+    if (thicknessJob !== job) return // superseded by a newer run
+    thicknessJob = null
+    if (!field) {
+      // cancelled — leave any previous heatmap untouched
+      useAppStore.getState().patchHeatmap({ busy: false, progress: 0 })
+      return
+    }
+    const threshold = useAppStore.getState().measure.heatmap.thresholdMm
+    eng.setThicknessHeatmap(id, field.values, { min: field.min, max: field.max }, threshold)
+    useAppStore.getState().patchHeatmap({
+      busy: false,
+      enabled: true,
+      progress: 1,
+      range: { min: field.min, max: field.max },
+      partId: id,
+    })
+  } catch (err) {
+    if (thicknessJob !== job) return // a newer run owns the state now
+    thicknessJob = null
+    useAppStore.getState().patchHeatmap({ busy: false, error: String(err) })
+  }
+}
+
+/** Abort an in-flight heatmap compute. */
+export function cancelThicknessHeatmap() {
+  thicknessJob?.cancel()
+  thicknessJob = null
+  useAppStore.getState().patchHeatmap({ busy: false, progress: 0 })
+}
+
+/** Drag the minimum-thickness threshold — recolours the existing field, no recompute. */
+export function setHeatmapThreshold(mm: number) {
+  if (!Number.isFinite(mm)) return
+  useAppStore.getState().patchHeatmap({ thresholdMm: mm })
+  if (useAppStore.getState().measure.heatmap.enabled) getEngine().setHeatmapThreshold(mm)
+}
+
+/** Remove the heatmap overlay, restoring the part's normal material. */
+export function clearThicknessHeatmap() {
+  thicknessJob?.cancel()
+  thicknessJob = null
+  engine?.clearThicknessHeatmap()
+  useAppStore.getState().patchHeatmap({
+    enabled: false, busy: false, progress: 0, range: null, partId: null, error: null,
+  })
+}
+
+/** Tear the heatmap down when leaving the Measure tab. */
+export function teardownHeatmap() {
+  if (useAppStore.getState().measure.heatmap.enabled || thicknessJob) clearThicknessHeatmap()
+}
+
 /** Drafting mode: orthographic side view, ready for a dimensioned snapshot. */
 export function draftingView() {
   const eng = getEngine()
@@ -1026,7 +1116,7 @@ async function initDeliverData() {
     if (prefs && typeof prefs === 'object') {
       keepEnum(patch, prefs, 'template', ['quote', 'casting', 'internal'])
       keepEnum(patch, prefs, 'billing', ['exact', '15min', '30min', '1h'])
-      keepEnum(patch, prefs, 'exportFormat', ['stl', 'obj', 'glb'])
+      keepEnum(patch, prefs, 'exportFormat', ['stl', 'obj', 'glb', 'ply', '3mf'])
       keepEnum(patch, prefs, 'exportScope', ['merged', 'per-part'])
       if (typeof prefs.showMetalPrices === 'boolean') patch.showMetalPrices = prefs.showMetalPrices
       if (typeof prefs.applyShrinkage === 'boolean') patch.applyShrinkage = prefs.applyShrinkage
@@ -1121,12 +1211,16 @@ const MESH_MIME: Record<MeshFormat, string> = {
   stl: 'model/stl',
   obj: 'text/plain',
   glb: 'model/gltf-binary',
+  ply: 'application/octet-stream',
+  '3mf': 'model/3mf',
 }
 
 const MESH_SAVE_TYPE: Record<MeshFormat, SaveType> = {
   stl: { description: 'STL mesh', accept: { 'model/stl': ['.stl'] } },
   obj: { description: 'OBJ mesh', accept: { 'text/plain': ['.obj'] } },
   glb: { description: 'glTF binary', accept: { 'model/gltf-binary': ['.glb'] } },
+  ply: { description: 'PLY mesh', accept: { 'application/octet-stream': ['.ply'] } },
+  '3mf': { description: '3MF package', accept: { 'model/3mf': ['.3mf'] } },
 }
 
 /** Export the scene as STL / OBJ / GLB, merged or one file per part (§2.7). */
@@ -1156,6 +1250,10 @@ export async function exportMesh(opts: { share?: boolean } = {}): Promise<void> 
         built.push({ data: exportSTL(file.mesh), name: fname, mime })
       } else if (d.exportFormat === 'obj') {
         built.push({ data: exportOBJ([file]), name: fname, mime })
+      } else if (d.exportFormat === 'ply') {
+        built.push({ data: exportPLY(file.mesh), name: fname, mime })
+      } else if (d.exportFormat === '3mf') {
+        built.push({ data: export3MF([file]), name: fname, mime })
       } else {
         built.push({ data: await getEngine().exportGLTF([file], { binary: true }), name: fname, mime })
       }

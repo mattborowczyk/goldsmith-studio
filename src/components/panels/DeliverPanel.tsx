@@ -22,6 +22,8 @@ const FORMATS: { id: MeshFormat; label: string }[] = [
   { id: 'stl', label: 'STL' },
   { id: 'obj', label: 'OBJ' },
   { id: 'glb', label: 'GLB' },
+  { id: 'ply', label: 'PLY' },
+  { id: '3mf', label: '3MF' },
 ]
 
 const TEMPLATES: { id: ReportTemplate; label: string; hint: string }[] = [
@@ -52,13 +54,13 @@ function ExportSection() {
   return (
     <div className="flex flex-col gap-2">
       <span className="text-xs font-medium text-muted-foreground">Mesh export</span>
-      <div className="flex gap-1">
+      <div className="flex flex-wrap gap-1">
         {FORMATS.map((f) => (
           <Button
             key={f.id}
             variant={d.exportFormat === f.id ? 'default' : 'secondary'}
             size="sm"
-            className="flex-1"
+            className="min-w-12 flex-1"
             onClick={() => patchDeliver({ exportFormat: f.id })}
           >
             {f.label}
@@ -123,7 +125,7 @@ function ExportSection() {
         )}
       </div>
       <p className="text-[10px] text-muted-foreground/70">
-        PLY &amp; 3MF arrive in a later release.
+        3MF is a stored-zip package; PLY suits dental/scan workflows.
       </p>
     </div>
   )

@@ -29,6 +29,7 @@ import type {
   ViewPreset,
 } from '../types'
 import { anglePointOnRing, pointAngleDeg } from '../geometry/resize'
+import { thicknessColor } from '../geometry/thickness'
 import type { NamedMesh } from '../io/exporters'
 import { createBackMaterial, createMaterial } from './materials'
 import { createBackgroundTexture, createStudioEnvironment } from './environment'
@@ -44,6 +45,17 @@ interface ScenePart {
   /** Per-part material override; null follows the global display mode. */
   materialOverride: MaterialPreset | null
   flatShading: boolean
+  /** Source-vertex rgb (0..1) from a coloured import (PLY scans); shown by default. */
+  vertexColors: Float32Array | null
+}
+
+/** Active wall-thickness heatmap: stored so a threshold drag recolours cheaply. */
+interface HeatmapState {
+  id: string
+  values: Float32Array
+  min: number
+  max: number
+  threshold: number
 }
 
 export interface SceneManagerEvents {
@@ -93,6 +105,7 @@ export class SceneManager {
   /** Active clipping planes from the section tool, applied to every material. */
   private clipPlanes: THREE.Plane[] = []
   private displayMode: DisplayMode = 'gold'
+  private heatmap: HeatmapState | null = null
   private parts = new Map<string, ScenePart>()
   private partOrder: string[] = []
   private selectedId: string | null = null
@@ -297,6 +310,7 @@ export class SceneManager {
     data: MeshData,
     matrix?: number[],
     appearance?: Partial<PartAppearance>,
+    colors?: Float32Array,
   ): PartInfo {
     const displayGeometry = this.buildDisplayGeometry(data)
     const mesh = new THREE.Mesh(displayGeometry)
@@ -311,6 +325,7 @@ export class SceneManager {
       id, name, mesh, backMesh, data, displayGeometry,
       materialOverride: appearance?.material ?? null,
       flatShading: appearance?.flatShading ?? false,
+      vertexColors: colors && colors.length >= data.positions.length ? colors : null,
     }
     this.parts.set(id, part)
     this.partOrder.push(id)
@@ -335,11 +350,69 @@ export class SceneManager {
     return mat
   }
 
+  /** Get (or lazily build) a vertex-colour material (PLY colours, heatmap). */
+  private getVertexColorMaterial(flat: boolean): THREE.Material {
+    const key = `__vcolor:${flat}`
+    let mat = this.matCache.get(key) as THREE.MeshStandardMaterial | undefined
+    if (!mat) {
+      mat = new THREE.MeshStandardMaterial({
+        vertexColors: true, metalness: 0, roughness: 0.85, flatShading: flat,
+      })
+      mat.userData.baseSide = THREE.FrontSide
+      this.matCache.set(key, mat)
+    }
+    // keep section clipping working on coloured/heatmapped parts too
+    mat.clippingPlanes = this.clipPlanes
+    mat.clipShadows = true
+    mat.side = this.clipPlanes.length ? THREE.DoubleSide : THREE.FrontSide
+    return mat
+  }
+
+  /**
+   * Whether a part should show its imported vertex colours: it has them, no
+   * explicit per-part override, and the global mode is a normal lit one (the
+   * debug modes — wireframe/normals/backface — still take precedence).
+   */
+  private showsVertexColors(part: ScenePart): boolean {
+    if (!part.vertexColors || part.materialOverride !== null) return false
+    return this.displayMode === 'gold' || this.displayMode === 'silver' || this.displayMode === 'studio'
+  }
+
   /** Assign a part its effective material (override, else global mode) + back overlay. */
   private applyPartMaterial(part: ScenePart) {
+    if (this.heatmap?.id === part.id) return // heatmap owns this part's material
+    if (this.showsVertexColors(part)) {
+      this.applyColorAttribute(part, part.vertexColors!)
+      part.mesh.material = this.getVertexColorMaterial(part.flatShading)
+      part.backMesh.visible = false
+      return
+    }
     const preset = part.materialOverride ?? this.displayMode
     part.mesh.material = this.getMaterial(preset, part.flatShading)
     part.backMesh.visible = preset === 'backface'
+  }
+
+  /**
+   * Write a per-source-vertex rgb field (0..1) onto the display geometry's
+   * `color` attribute. buildDisplayGeometry's toCreasedNormals expands each
+   * indexed triangle to three vertices in face order, so display vertex i maps to
+   * source vertex data.indices[i] (or i directly if the geometry stays indexed).
+   */
+  private applyColorAttribute(part: ScenePart, srcColors: Float32Array) {
+    const geo = part.displayGeometry
+    const posAttr = geo.getAttribute('position')
+    const vcount = posAttr.count
+    const colors = new Float32Array(vcount * 3)
+    const index = geo.getIndex()
+    const map = part.data.indices
+    for (let i = 0; i < vcount; i++) {
+      let src = index ? index.getX(i) : (i < map.length ? map[i] : i)
+      if (src * 3 + 2 >= srcColors.length) src = 0
+      colors[i * 3] = srcColors[src * 3]
+      colors[i * 3 + 1] = srcColors[src * 3 + 1]
+      colors[i * 3 + 2] = srcColors[src * 3 + 2]
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
   }
 
   setPartMaterial(id: string, material: MaterialPreset | null) {
@@ -373,6 +446,7 @@ export class SceneManager {
   removePart(id: string) {
     const part = this.parts.get(id)
     if (!part) return
+    if (this.heatmap?.id === id) this.heatmap = null
     if (this.selectedId === id) this.select(null)
     this.scene.remove(part.mesh)
     part.displayGeometry.dispose()
@@ -447,6 +521,7 @@ export class SceneManager {
     visible: boolean
     material: MaterialPreset | null
     flatShading: boolean
+    colors: Float32Array | null
   } | null {
     const part = this.parts.get(id)
     if (!part) return null
@@ -460,6 +535,7 @@ export class SceneManager {
       visible: part.mesh.visible,
       material: part.materialOverride,
       flatShading: part.flatShading,
+      colors: part.vertexColors ? part.vertexColors.slice() : null,
     }
   }
 
@@ -1034,6 +1110,62 @@ export class SceneManager {
       obj.geometry?.dispose()
       ;(obj.material as THREE.Material | undefined)?.dispose?.()
     }
+  }
+
+  // ---------- wall-thickness heatmap (plan §2.3) ----------
+
+  /**
+   * Paint a per-source-vertex thickness field onto a part: red (thin) → green →
+   * blue (thick), with everything at/under `threshold` mm in hard red. Transient
+   * overlay (recomputed on demand, never autosaved) — mirrors the analysis
+   * highlight pattern. Dragging the threshold goes through setHeatmapThreshold,
+   * which only recolours.
+   */
+  setThicknessHeatmap(
+    id: string,
+    values: Float32Array,
+    range: { min: number; max: number },
+    threshold: number,
+  ) {
+    const part = this.parts.get(id)
+    if (!part) return
+    if (this.heatmap && this.heatmap.id !== id) this.clearThicknessHeatmap()
+    this.heatmap = { id, values, min: range.min, max: range.max, threshold }
+    this.paintHeatmap(part)
+  }
+
+  /** Recolour the active heatmap for a new minimum-thickness threshold. */
+  setHeatmapThreshold(threshold: number) {
+    if (!this.heatmap) return
+    this.heatmap.threshold = threshold
+    const part = this.parts.get(this.heatmap.id)
+    if (part) this.paintHeatmap(part)
+  }
+
+  private paintHeatmap(part: ScenePart) {
+    const h = this.heatmap!
+    const srcColors = new Float32Array(part.data.positions.length)
+    for (let v = 0; v < h.values.length; v++) {
+      const [r, g, b] = thicknessColor(h.values[v], h.min, h.max, h.threshold)
+      srcColors[v * 3] = r
+      srcColors[v * 3 + 1] = g
+      srcColors[v * 3 + 2] = b
+    }
+    this.applyColorAttribute(part, srcColors)
+    part.mesh.material = this.getVertexColorMaterial(part.flatShading)
+    part.backMesh.visible = false
+  }
+
+  clearThicknessHeatmap() {
+    const h = this.heatmap
+    if (!h) return
+    this.heatmap = null
+    const part = this.parts.get(h.id)
+    if (part) this.applyPartMaterial(part) // restores preset / imported colours
+  }
+
+  hasThicknessHeatmap(): boolean {
+    return this.heatmap !== null
   }
 
   // ---------- camera ----------
