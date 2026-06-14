@@ -997,10 +997,7 @@ async function initDeliverData() {
       if (typeof branding.businessName === 'string') nextBranding.businessName = branding.businessName
       if (typeof branding.contact === 'string') nextBranding.contact = branding.contact
       // only accept a logo we could actually re-embed (the data-URLs this feature writes)
-      if (
-        typeof branding.logo === 'string' &&
-        (branding.logo === '' || /^data:image\/(?:png|jpeg);base64,/i.test(branding.logo))
-      ) {
+      if (typeof branding.logo === 'string' && isSupportedLogoDataURL(branding.logo)) {
         nextBranding.logo = branding.logo
       }
       patch.branding = nextBranding
@@ -1055,17 +1052,34 @@ export function patchDeliver(patch: Partial<DeliverState>) {
   persistReportPrefs()
 }
 
+/** A logo we can actually re-embed in the PDF: empty, or a png/jpeg data-URL. */
+function isSupportedLogoDataURL(value: string): boolean {
+  return value === '' || /^data:image\/(?:png|jpeg);base64,/i.test(value)
+}
+
 export function setBranding(patch: Partial<ReportBranding>) {
-  const branding = { ...useAppStore.getState().deliver.branding, ...patch }
+  const current = useAppStore.getState().deliver.branding
+  // enforce the ReportBranding contract on writes too, not just on rehydrate
+  const branding: ReportBranding = {
+    businessName: typeof patch.businessName === 'string' ? patch.businessName : current.businessName,
+    contact: typeof patch.contact === 'string' ? patch.contact : current.contact,
+    logo:
+      typeof patch.logo === 'string' && isSupportedLogoDataURL(patch.logo)
+        ? patch.logo
+        : current.logo,
+  }
   useAppStore.getState().patchDeliver({ branding })
   void kvSet(KV_BRANDING, branding)
 }
 
 /** Read an uploaded logo file as a data-URL and store it in branding. */
 export function setLogoFromFile(file: File): void {
+  if (!/^image\/(?:png|jpeg)$/i.test(file.type)) return
   const reader = new FileReader()
   reader.onload = () => {
-    if (typeof reader.result === 'string') setBranding({ logo: reader.result })
+    if (typeof reader.result === 'string' && isSupportedLogoDataURL(reader.result)) {
+      setBranding({ logo: reader.result })
+    }
   }
   reader.readAsDataURL(file)
 }
