@@ -993,11 +993,17 @@ async function initDeliverData() {
     ])
     const patch: Partial<DeliverState> = {}
     if (branding && typeof branding === 'object') {
-      patch.branding = {
-        businessName: String(branding.businessName ?? ''),
-        contact: String(branding.contact ?? ''),
-        logo: String(branding.logo ?? ''),
+      const nextBranding: ReportBranding = { businessName: '', contact: '', logo: '' }
+      if (typeof branding.businessName === 'string') nextBranding.businessName = branding.businessName
+      if (typeof branding.contact === 'string') nextBranding.contact = branding.contact
+      // only accept a logo we could actually re-embed (the data-URLs this feature writes)
+      if (
+        typeof branding.logo === 'string' &&
+        (branding.logo === '' || /^data:image\/(?:png|jpeg);base64,/i.test(branding.logo))
+      ) {
+        nextBranding.logo = branding.logo
       }
+      patch.branding = nextBranding
     }
     // whitelist persisted enums/numbers — a stale or corrupted record must not
     // feed an invalid value to the panel (.find(...) would return undefined)
