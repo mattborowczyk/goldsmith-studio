@@ -164,6 +164,7 @@ export function ImportPanel() {
               variant="secondary"
               size="icon"
               title="Share backup"
+              aria-label="Share backup"
               disabled={backupBusy !== null}
               onClick={() => void runBackup('share')}
             >

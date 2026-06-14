@@ -12,13 +12,14 @@ import { Button } from '@/components/ui/button'
 export function PwaBanner() {
   const { needRefresh, offlineReady, canInstall } = useAppStore((s) => s.pwa)
 
-  // The "offline ready" note is informational — fade it out on its own.
+  // The "offline ready" note is informational — fade it out on its own, but
+  // only while it's the banner actually showing (update + install take priority).
   useEffect(() => {
-    if (offlineReady && !needRefresh) {
+    if (offlineReady && !needRefresh && !canInstall) {
       const t = setTimeout(dismissPwaBanner, 6000)
       return () => clearTimeout(t)
     }
-  }, [offlineReady, needRefresh])
+  }, [offlineReady, needRefresh, canInstall])
 
   if (!needRefresh && !offlineReady && !canInstall) return null
 

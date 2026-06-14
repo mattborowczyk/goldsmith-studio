@@ -81,13 +81,39 @@ export function parseBackup(text: string): DatabaseDump {
       throw new Error(`Backup is malformed: "${store}" is missing or not a list.`)
     }
   }
+  // validate entry shapes before they reach restoreDatabase: every store put
+  // needs a key (inline keyPath 'id', or out-of-line 'key'), so a malformed
+  // entry must fail here rather than blow up mid-restore.
+  // the Array.isArray guard above already proved each store is an array
   const parts = (data.parts as SerializedPart[]).map(deserializePart)
+  requireIdentified(data.materials as unknown[], 'materials')
+  requireIdentified(data.history as unknown[], 'history')
+  requireKeyed(data.settings as unknown[], 'settings')
+  requireKeyed(data.kv as unknown[], 'kv')
   return {
     parts,
     settings: data.settings as DatabaseDump['settings'],
     materials: data.materials as Material[],
     history: data.history as HistoryEntry[],
     kv: data.kv as DatabaseDump['kv'],
+  }
+}
+
+/** Each entry must be an object with a string inline key (keyPath 'id'). */
+function requireIdentified(entries: unknown[], store: string): void {
+  for (const e of entries) {
+    if (!isRecord(e) || typeof e.id !== 'string') {
+      throw new Error(`Backup is malformed: an entry in "${store}" is missing its id.`)
+    }
+  }
+}
+
+/** Each entry must be a { key: string, value } pair (out-of-line keyed store). */
+function requireKeyed(entries: unknown[], store: string): void {
+  for (const e of entries) {
+    if (!isRecord(e) || typeof e.key !== 'string') {
+      throw new Error(`Backup is malformed: an entry in "${store}" is missing its key.`)
+    }
   }
 }
 
@@ -100,11 +126,20 @@ function serializePart(part: SavedPart): SerializedPart {
 }
 
 function deserializePart(part: SerializedPart): SavedPart {
-  if (typeof part?.positions !== 'string' || typeof part?.indices !== 'string') {
+  if (typeof part?.id !== 'string') {
+    throw new Error('Backup is malformed: a part is missing its id.')
+  }
+  if (typeof part.positions !== 'string' || typeof part.indices !== 'string') {
     throw new Error('Backup is malformed: a part is missing its geometry.')
   }
-  const posBytes = base64ToBytes(part.positions)
-  const idxBytes = base64ToBytes(part.indices)
+  let posBytes: Uint8Array
+  let idxBytes: Uint8Array
+  try {
+    posBytes = base64ToBytes(part.positions)
+    idxBytes = base64ToBytes(part.indices)
+  } catch {
+    throw new Error('Backup is malformed: part geometry is corrupt.')
+  }
   if (posBytes.byteLength % 4 !== 0 || idxBytes.byteLength % 4 !== 0) {
     throw new Error('Backup is malformed: part geometry is corrupt.')
   }

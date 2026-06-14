@@ -122,4 +122,22 @@ describe('backup validation', () => {
     delete file.data.parts[0].positions
     expect(() => parseBackup(JSON.stringify(file))).toThrow(/geometry/i)
   })
+
+  it('rejects a part with corrupt base64 geometry', () => {
+    const file = JSON.parse(serializeBackup(sampleDump()))
+    file.data.parts[0].positions = '@@@ not base64 @@@'
+    expect(() => parseBackup(JSON.stringify(file))).toThrow(/corrupt/i)
+  })
+
+  it('rejects an identified-store entry missing its id', () => {
+    const file = JSON.parse(serializeBackup(sampleDump()))
+    delete file.data.materials[0].id
+    expect(() => parseBackup(JSON.stringify(file))).toThrow(/materials/i)
+  })
+
+  it('rejects a keyed-store entry missing its key', () => {
+    const file = JSON.parse(serializeBackup(sampleDump()))
+    file.data.kv[0] = { value: 'orphaned' } // no key
+    expect(() => parseBackup(JSON.stringify(file))).toThrow(/kv/i)
+  })
 })

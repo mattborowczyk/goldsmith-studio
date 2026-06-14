@@ -20,7 +20,7 @@ import {
 } from '@/core/persist/db'
 import { parseBackup, serializeBackup } from '@/core/persist/backup'
 import { saveFile, shareFiles, pickTextFile, type SaveData, type SaveType } from '@/app/files'
-import { applyAccent, DEFAULT_ACCENT } from '@/app/theme'
+import { applyAccent, normalizeAccent } from '@/app/theme'
 import {
   applySpotPrices,
   costOf,
@@ -319,7 +319,7 @@ async function restoreSession() {
       store.setDisplayMode(settings.displayMode)
       store.setBackground(settings.background)
       store.setGridVisible(settings.gridVisible)
-      const accent = settings.accent ?? DEFAULT_ACCENT
+      const accent = normalizeAccent(settings.accent)
       store.setAccent(accent)
       applyAccent(accent)
     }
@@ -361,8 +361,9 @@ export function setGridVisible(visible: boolean) {
 
 /** Switch the accent-colour preset (plan §2.8 theming) and persist the choice. */
 export function setAccent(id: string) {
-  applyAccent(id)
-  useAppStore.getState().setAccent(id)
+  const accent = normalizeAccent(id)
+  applyAccent(accent)
+  useAppStore.getState().setAccent(accent)
   persistDisplaySettings()
 }
 

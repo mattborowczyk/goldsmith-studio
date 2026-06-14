@@ -161,46 +161,51 @@ export interface DatabaseDump {
   kv: { key: string; value: unknown }[]
 }
 
-/** Read every store into a plain object (settings + kv enumerated by key). */
+const ALL_STORES = ['parts', 'settings', 'materials', 'history', 'kv'] as const
+
+/**
+ * Read every store into a plain object within ONE read-only transaction so the
+ * snapshot is internally consistent (settings + kv enumerated by key). getAll and
+ * getAllKeys share the store's key order, so zipping them keeps key↔value paired.
+ */
 export async function dumpDatabase(): Promise<DatabaseDump> {
   const db = await getDB()
-  const [parts, materials, history] = await Promise.all([
-    db.getAll('parts'),
-    db.getAll('materials'),
-    db.getAll('history'),
+  const tx = db.transaction(ALL_STORES, 'readonly')
+  const parts = await tx.objectStore('parts').getAll()
+  const materials = await tx.objectStore('materials').getAll()
+  const history = await tx.objectStore('history').getAll()
+  const settingsStore = tx.objectStore('settings')
+  const [settingsKeys, settingsVals] = await Promise.all([
+    settingsStore.getAllKeys(),
+    settingsStore.getAll(),
   ])
-  const settingsKeys = await db.getAllKeys('settings')
-  const settings = await Promise.all(
-    settingsKeys.map(async (key) => ({
-      key: String(key),
-      value: (await db.get('settings', key))!,
-    })),
-  )
-  const kvKeys = await db.getAllKeys('kv')
-  const kv = await Promise.all(
-    kvKeys.map(async (key) => ({ key: String(key), value: await db.get('kv', key) })),
-  )
+  const settings = settingsKeys.map((key, i) => ({ key: String(key), value: settingsVals[i] }))
+  const kvStore = tx.objectStore('kv')
+  const [kvKeys, kvVals] = await Promise.all([kvStore.getAllKeys(), kvStore.getAll()])
+  const kv = kvKeys.map((key, i) => ({ key: String(key), value: kvVals[i] }))
+  await tx.done
   return { parts, settings, materials, history, kv }
 }
 
-/** Replace the entire database contents with a dump (clears each store first). */
+/**
+ * Replace the entire database with a dump in ONE read-write transaction — the
+ * restore is all-or-nothing: if any write fails the transaction aborts and the
+ * existing data is left untouched. Requests are issued without intermediate
+ * awaits so the transaction can't auto-commit early.
+ */
 export async function restoreDatabase(dump: DatabaseDump): Promise<void> {
   const db = await getDB()
-  // inline-key stores
+  const tx = db.transaction(ALL_STORES, 'readwrite')
   for (const store of ['parts', 'materials', 'history'] as const) {
-    const tx = db.transaction(store, 'readwrite')
-    await tx.store.clear()
-    for (const value of dump[store]) await tx.store.put(value as never)
-    await tx.done
+    const os = tx.objectStore(store)
+    os.clear()
+    for (const value of dump[store]) os.put(value as never)
   }
-  // out-of-line keyed stores
-  const sTx = db.transaction('settings', 'readwrite')
-  await sTx.store.clear()
-  for (const { key, value } of dump.settings) await sTx.store.put(value, key)
-  await sTx.done
-
-  const kTx = db.transaction('kv', 'readwrite')
-  await kTx.store.clear()
-  for (const { key, value } of dump.kv) await kTx.store.put(value, key)
-  await kTx.done
+  const settingsStore = tx.objectStore('settings')
+  settingsStore.clear()
+  for (const { key, value } of dump.settings) settingsStore.put(value, key)
+  const kvStore = tx.objectStore('kv')
+  kvStore.clear()
+  for (const { key, value } of dump.kv) kvStore.put(value, key)
+  await tx.done
 }

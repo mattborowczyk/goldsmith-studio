@@ -40,8 +40,10 @@ const BILLING: { id: BillingIncrement; label: string }[] = [
 const textareaClass =
   'w-full rounded-md border border-border bg-input/50 px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
-// Web Share (§2.8): send an exported STL/PDF straight to Mail/AirDrop on iPad.
-const SHARE_SUPPORTED = canShareFiles([new File([''], 'export.stl', { type: 'model/stl' })])
+// Web Share (§2.8): send an exported file straight to Mail/AirDrop on iPad.
+// Probe per MIME type — a browser may allow PDF sharing while blocking STL.
+const SHARE_MESH = canShareFiles([new File([''], 'export.stl', { type: 'model/stl' })])
+const SHARE_PDF = canShareFiles([new File([''], 'report.pdf', { type: 'application/pdf' })])
 
 function ExportSection() {
   const d = useAppStore((s) => s.deliver)
@@ -107,11 +109,12 @@ function ExportSection() {
           {d.exporting ? <Loader2 className="animate-spin" /> : <Box />}
           Export {d.exportFormat.toUpperCase()}
         </Button>
-        {SHARE_SUPPORTED && (
+        {SHARE_MESH && (
           <Button
             variant="secondary"
             size="icon"
             title="Share export"
+            aria-label="Share export"
             disabled={d.exporting || parts.length === 0}
             onClick={() => void exportMesh({ share: true })}
           >
@@ -289,11 +292,12 @@ function ReportSection() {
           {d.generating ? <Loader2 className="animate-spin" /> : <FileText />}
           Generate PDF
         </Button>
-        {SHARE_SUPPORTED && (
+        {SHARE_PDF && (
           <Button
             variant="secondary"
             size="icon"
             title="Share PDF"
+            aria-label="Share PDF"
             disabled={d.generating || parts.length === 0}
             onClick={() => void generateReportPDF({ share: true })}
           >

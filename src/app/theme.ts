@@ -24,6 +24,11 @@ export const ACCENTS: AccentPreset[] = [
 
 export const DEFAULT_ACCENT = 'gold'
 
+/** Coerce an arbitrary (possibly stale/restored) id to a known accent preset. */
+export function normalizeAccent(id: string | undefined): string {
+  return ACCENTS.some((p) => p.id === id) ? (id as string) : DEFAULT_ACCENT
+}
+
 /** Write the accent's oklch tokens onto :root, mirroring index.css's defaults. */
 export function applyAccent(id: string): void {
   const a = ACCENTS.find((p) => p.id === id) ?? ACCENTS[0]

@@ -77,6 +77,9 @@ export function pickTextFile(accept: string): Promise<string | null> {
       if (!file) return resolve(null)
       file.text().then(resolve, () => resolve(null))
     }
+    // dismissing the picker fires 'cancel' (not 'change') in modern browsers —
+    // resolve null so the returned Promise never dangles
+    input.oncancel = () => resolve(null)
     input.click()
   })
 }
