@@ -105,7 +105,9 @@ function meshDataFromGeo(geo: THREE.BufferGeometry): MeshData {
 /** Per-vertex rgb (0..1) from a geometry's `color` attribute, or undefined. */
 function colorsFromGeo(geo: THREE.BufferGeometry): Float32Array | undefined {
   const attr = geo.getAttribute('color') as THREE.BufferAttribute | undefined
-  if (!attr || attr.itemSize < 3) return undefined
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined
+  // enforce the one-rgb-triple-per-vertex contract; bail on malformed geometry
+  if (!attr || attr.itemSize < 3 || !pos || attr.count !== pos.count) return undefined
   const out = new Float32Array(attr.count * 3)
   for (let i = 0; i < attr.count; i++) {
     out[i * 3] = attr.getX(i)

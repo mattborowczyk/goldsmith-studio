@@ -51,6 +51,7 @@ self.onmessage = async (ev: MessageEvent<ThicknessRequest>) => {
       ok: true,
       result: { values: field.values, min: field.min, max: field.max },
     }
+    cancelled.delete(req.id) // clear any late cancel that raced the result
     self.postMessage(msg, { transfer: [field.values.buffer] })
   } catch (err) {
     cancelled.delete(req.id)

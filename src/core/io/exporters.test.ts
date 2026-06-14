@@ -140,6 +140,11 @@ describe('binary PLY writer', () => {
     expect(ply.colors[0]).toEqual([0, 128, 255]) // round(0*255), round(.5*255), round(1*255)
     expect(ply.colors[7]).toEqual([255, 128, 0])
   })
+
+  it('throws on a colour buffer that does not match the vertex count', () => {
+    const cube = makeCube(10) // 8 vertices → needs 24 colour components
+    expect(() => exportPLY(cube, new Float32Array(16))).toThrow(/colors length/)
+  })
 })
 
 describe('3MF writer', () => {

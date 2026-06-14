@@ -140,7 +140,12 @@ export function exportPLY(mesh: MeshData, colors?: Float32Array): Uint8Array {
   const idx = mesh.indices
   const vertexCount = p.length / 3
   const triCount = idx.length / 3
-  const hasColor = !!colors && colors.length >= vertexCount * 3
+  // strict: a mismatched colour buffer is corruption, not a reason to silently
+  // drop colours (which would lose expected scan colour on export)
+  if (colors && colors.length !== vertexCount * 3) {
+    throw new Error(`exportPLY: colors length ${colors.length} ≠ ${vertexCount * 3} (3 × vertices)`)
+  }
+  const hasColor = !!colors
 
   const header =
     'ply\n' +

@@ -100,9 +100,15 @@ export function initEngine(container: HTMLElement): SceneManager {
   const store = useAppStore.getState()
 
   engine.on('partsChanged', () => {
-    useAppStore.getState().setParts(engine!.listParts())
+    const s = useAppStore.getState()
+    s.setParts(engine!.listParts())
+    // the engine drops its heatmap when the painted part is removed/replaced;
+    // reconcile the store so the Measure panel doesn't show a stale overlay
+    if (s.measure.heatmap.enabled && !engine!.hasThicknessHeatmap()) {
+      s.patchHeatmap({ enabled: false, busy: false, progress: 0, range: null, partId: null, error: null })
+    }
     scheduleAutosave()
-    if (useAppStore.getState().tab === 'cost') scheduleVolumeRecompute()
+    if (s.tab === 'cost') scheduleVolumeRecompute()
   })
   engine.on('selectionChanged', (id) => {
     useAppStore.getState().setSelected(id)
@@ -756,7 +762,8 @@ export async function computeThicknessHeatmap(): Promise<void> {
       partId: id,
     })
   } catch (err) {
-    if (thicknessJob === job) thicknessJob = null
+    if (thicknessJob !== job) return // a newer run owns the state now
+    thicknessJob = null
     useAppStore.getState().patchHeatmap({ busy: false, error: String(err) })
   }
 }

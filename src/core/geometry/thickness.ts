@@ -31,7 +31,7 @@ export interface ThicknessProgress {
   yieldEvery?: number
 }
 
-/** Angle-weighted vertex normals (outward, assuming CCW winding). */
+/** Area-weighted vertex normals (outward, assuming CCW winding). */
 function computeVertexNormals(positions: Float32Array, indices: Uint32Array): Float32Array {
   const normals = new Float32Array(positions.length)
   for (let t = 0; t < indices.length; t += 3) {
