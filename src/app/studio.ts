@@ -378,7 +378,9 @@ function downloadBlob(data: Uint8Array | ArrayBuffer | string, filename: string,
   a.href = url
   a.download = filename
   a.click()
-  URL.revokeObjectURL(url)
+  // defer revoke so WebKit/Safari (the primary iPad target) finishes initiating
+  // the download before the blob URL is invalidated
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 
 /** Strip the `data:...;base64,` prefix and decode to bytes (for PDF embedding). */
@@ -990,12 +992,40 @@ async function initDeliverData() {
       kvGet<ReportPrefs>(KV_REPORT_PREFS),
     ])
     const patch: Partial<DeliverState> = {}
-    if (branding) patch.branding = branding
-    if (prefs) Object.assign(patch, prefs)
+    if (branding && typeof branding === 'object') {
+      patch.branding = {
+        businessName: String(branding.businessName ?? ''),
+        contact: String(branding.contact ?? ''),
+        logo: String(branding.logo ?? ''),
+      }
+    }
+    // whitelist persisted enums/numbers — a stale or corrupted record must not
+    // feed an invalid value to the panel (.find(...) would return undefined)
+    if (prefs && typeof prefs === 'object') {
+      keepEnum(patch, prefs, 'template', ['quote', 'casting', 'internal'])
+      keepEnum(patch, prefs, 'billing', ['exact', '15min', '30min', '1h'])
+      keepEnum(patch, prefs, 'exportFormat', ['stl', 'obj', 'glb'])
+      keepEnum(patch, prefs, 'exportScope', ['merged', 'per-part'])
+      if (typeof prefs.showMetalPrices === 'boolean') patch.showMetalPrices = prefs.showMetalPrices
+      if (typeof prefs.applyShrinkage === 'boolean') patch.applyShrinkage = prefs.applyShrinkage
+      if (Number.isFinite(prefs.labourRate)) patch.labourRate = prefs.labourRate
+      if (Number.isFinite(prefs.shrinkagePct)) patch.shrinkagePct = prefs.shrinkagePct
+    }
     if (Object.keys(patch).length) useAppStore.getState().patchDeliver(patch)
   } catch (err) {
     console.warn('Deliver data init failed', err)
   }
+}
+
+/** Copy `key` from a persisted record into the patch only if it's an allowed value. */
+function keepEnum<K extends keyof ReportPrefs>(
+  patch: Partial<DeliverState>,
+  prefs: ReportPrefs,
+  key: K,
+  allowed: readonly ReportPrefs[K][],
+) {
+  const value = prefs[key]
+  if (allowed.includes(value)) (patch as Record<K, ReportPrefs[K]>)[key] = value
 }
 
 function persistReportPrefs() {
@@ -1058,6 +1088,10 @@ const MESH_MIME: Record<MeshFormat, string> = {
 export async function exportMesh(): Promise<void> {
   const store = useAppStore.getState()
   const d = store.deliver
+  if (d.applyShrinkage && !(1 + d.shrinkagePct / 100 > 0)) {
+    store.patchDeliver({ error: 'Shrinkage % must be greater than −100.' })
+    return
+  }
   const prepared = preparedMeshes()
   if (!prepared.length) {
     store.patchDeliver({ error: 'Nothing to export — import or generate a part first.' })

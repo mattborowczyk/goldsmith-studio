@@ -76,6 +76,7 @@ function ExportSection() {
       <div className="flex items-center justify-between">
         <span className="text-[11px] text-muted-foreground">Apply shrinkage scale</span>
         <Switch
+          aria-label="Apply shrinkage scale"
           checked={d.applyShrinkage}
           onCheckedChange={(v) => patchDeliver({ applyShrinkage: v })}
         />
@@ -243,6 +244,7 @@ function ReportSection() {
       <div className="flex items-center justify-between">
         <span className="text-[11px] text-muted-foreground">Disclose metal prices</span>
         <Switch
+          aria-label="Disclose metal prices"
           checked={d.showMetalPrices}
           onCheckedChange={(v) => patchDeliver({ showMetalPrices: v })}
         />
