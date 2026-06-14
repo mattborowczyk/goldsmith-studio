@@ -21,7 +21,7 @@ const TABS: { id: WorkflowTab; label: string; icon: React.ElementType; enabled: 
   { id: 'resize', label: 'Resize', icon: Scaling, enabled: true },
   { id: 'fit', label: 'Fit', icon: Smile, enabled: false },
   { id: 'cost', label: 'Cost', icon: Coins, enabled: true },
-  { id: 'deliver', label: 'Deliver', icon: FileText, enabled: false },
+  { id: 'deliver', label: 'Deliver', icon: FileText, enabled: true },
   { id: 'all', label: 'All', icon: LayoutGrid, enabled: false },
 ]
 

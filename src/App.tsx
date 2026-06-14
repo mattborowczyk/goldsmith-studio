@@ -8,6 +8,7 @@ import { MeasurePanel } from '@/components/panels/MeasurePanel'
 import { BuildPanel } from '@/components/panels/BuildPanel'
 import { ResizePanel } from '@/components/panels/ResizePanel'
 import { CostPanel } from '@/components/panels/CostPanel'
+import { DeliverPanel } from '@/components/panels/DeliverPanel'
 import { useAppStore } from '@/store/appStore'
 
 const TAB_TITLES: Record<string, string> = {
@@ -17,6 +18,7 @@ const TAB_TITLES: Record<string, string> = {
   build: 'Generators',
   resize: 'Smart Resizer',
   cost: 'Weight & Cost',
+  deliver: 'Export & Reports',
 }
 
 export default function App() {
@@ -39,6 +41,7 @@ export default function App() {
         {tab === 'build' && <BuildPanel />}
         {tab === 'resize' && <ResizePanel />}
         {tab === 'cost' && <CostPanel />}
+        {tab === 'deliver' && <DeliverPanel />}
       </aside>
     </div>
   )
