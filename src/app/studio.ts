@@ -5,17 +5,22 @@ import {
   addHistoryEntries,
   clearHistoryStore,
   deleteHistoryEntry,
+  dumpDatabase,
   kvGet,
   kvSet,
   loadHistory,
   loadMaterials,
   loadScene,
   loadSettings,
+  restoreDatabase,
   saveMaterials,
   saveScene,
   saveSettings,
   type SavedPart,
 } from '@/core/persist/db'
+import { parseBackup, serializeBackup } from '@/core/persist/backup'
+import { saveFile, shareFiles, pickTextFile, type SaveData, type SaveType } from '@/app/files'
+import { applyAccent, normalizeAccent } from '@/app/theme'
 import {
   applySpotPrices,
   costOf,
@@ -298,6 +303,7 @@ export function persistDisplaySettings() {
     displayMode: s.displayMode,
     background: s.background,
     gridVisible: s.gridVisible,
+    accent: s.accent,
   })
 }
 
@@ -313,6 +319,9 @@ async function restoreSession() {
       store.setDisplayMode(settings.displayMode)
       store.setBackground(settings.background)
       store.setGridVisible(settings.gridVisible)
+      const accent = normalizeAccent(settings.accent)
+      store.setAccent(accent)
+      applyAccent(accent)
     }
     for (const p of parts) {
       engine.addPart(p.id, p.name, p.data, p.matrix, {
@@ -350,6 +359,14 @@ export function setGridVisible(visible: boolean) {
   persistDisplaySettings()
 }
 
+/** Switch the accent-colour preset (plan §2.8 theming) and persist the choice. */
+export function setAccent(id: string) {
+  const accent = normalizeAccent(id)
+  applyAccent(accent)
+  useAppStore.getState().setAccent(accent)
+  persistDisplaySettings()
+}
+
 export function downloadSnapshot() {
   downloadDataURL(getEngine().snapshotPNG(), 'goldsmith-snapshot')
 }
@@ -371,16 +388,20 @@ function downloadDataURL(url: string, prefix: string) {
   a.click()
 }
 
-/** Trigger a download of arbitrary bytes/text as a named file. */
-function downloadBlob(data: Uint8Array | ArrayBuffer | string, filename: string, mime: string) {
-  const url = URL.createObjectURL(new Blob([data as BlobPart], { type: mime }))
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  // defer revoke so WebKit/Safari (the primary iPad target) finishes initiating
-  // the download before the blob URL is invalidated
-  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+/**
+ * Save (or share) one or more exported files. Single-file shares go through the
+ * Web Share API on iPad when requested + available, otherwise everything routes
+ * through saveFile (File System Access picker → download fallback).
+ */
+async function deliverFiles(
+  built: { data: SaveData; name: string; mime: string }[],
+  opts: { share?: boolean; title?: string; type?: SaveType } = {},
+) {
+  if (opts.share && built.length === 1) {
+    const f = built[0]
+    if (await shareFiles(f.data, f.name, f.mime, opts.title)) return
+  }
+  for (const f of built) await saveFile(f.data, f.name, f.mime, opts.type)
 }
 
 /** Strip the `data:...;base64,` prefix and decode to bytes (for PDF embedding). */
@@ -566,12 +587,10 @@ export async function clearHistoryLog(): Promise<void> {
 
 export function exportHistoryCSV() {
   const csv = historyToCSV(useAppStore.getState().cost.history)
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `goldsmith-history-${new Date().toISOString().slice(0, 10)}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
+  void saveFile(csv, `goldsmith-history-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv', {
+    description: 'CSV spreadsheet',
+    accept: { 'text/csv': ['.csv'] },
+  })
 }
 
 /** Casting shrinkage helper: scale the selected part up by `pct` %. */
@@ -1104,8 +1123,14 @@ const MESH_MIME: Record<MeshFormat, string> = {
   glb: 'model/gltf-binary',
 }
 
+const MESH_SAVE_TYPE: Record<MeshFormat, SaveType> = {
+  stl: { description: 'STL mesh', accept: { 'model/stl': ['.stl'] } },
+  obj: { description: 'OBJ mesh', accept: { 'text/plain': ['.obj'] } },
+  glb: { description: 'glTF binary', accept: { 'model/gltf-binary': ['.glb'] } },
+}
+
 /** Export the scene as STL / OBJ / GLB, merged or one file per part (§2.7). */
-export async function exportMesh(): Promise<void> {
+export async function exportMesh(opts: { share?: boolean } = {}): Promise<void> {
   const store = useAppStore.getState()
   const d = store.deliver
   if (d.applyShrinkage && !(1 + d.shrinkagePct / 100 > 0)) {
@@ -1124,17 +1149,18 @@ export async function exportMesh(): Promise<void> {
     const files: NamedMesh[] = d.exportScope === 'merged'
       ? [{ name: base, mesh: mergeMeshData(prepared.map((p) => p.mesh)) }]
       : prepared
+    const built: { data: SaveData; name: string; mime: string }[] = []
     for (const file of files) {
       const fname = `${safeFilename(file.name)}.${d.exportFormat}`
       if (d.exportFormat === 'stl') {
-        downloadBlob(exportSTL(file.mesh), fname, mime)
+        built.push({ data: exportSTL(file.mesh), name: fname, mime })
       } else if (d.exportFormat === 'obj') {
-        downloadBlob(exportOBJ([file]), fname, mime)
+        built.push({ data: exportOBJ([file]), name: fname, mime })
       } else {
-        const glb = await getEngine().exportGLTF([file], { binary: true })
-        downloadBlob(glb, fname, mime)
+        built.push({ data: await getEngine().exportGLTF([file], { binary: true }), name: fname, mime })
       }
     }
+    await deliverFiles(built, { share: opts.share, title: base, type: MESH_SAVE_TYPE[d.exportFormat] })
     useAppStore.getState().patchDeliver({ exporting: false })
   } catch (err) {
     useAppStore.getState().patchDeliver({
@@ -1207,7 +1233,7 @@ function buildReportInputFromState(): ReportInput {
 }
 
 /** Build the branded PDF report (auto viewport snapshot + logo) and download it. */
-export async function generateReportPDF(): Promise<void> {
+export async function generateReportPDF(opts: { share?: boolean } = {}): Promise<void> {
   const store = useAppStore.getState()
   if (store.parts.length === 0) {
     store.patchDeliver({ error: 'Nothing to report — import or generate a part first.' })
@@ -1220,7 +1246,14 @@ export async function generateReportPDF(): Promise<void> {
     const logo = model.branding.logo ? dataURLtoBytes(model.branding.logo) : undefined
     const bytes = await buildReportPDF(model, { render, logo })
     const base = safeFilename(store.deliver.title || 'goldsmith')
-    downloadBlob(bytes, `${base}-${model.template}.pdf`, 'application/pdf')
+    await deliverFiles(
+      [{ data: bytes, name: `${base}-${model.template}.pdf`, mime: 'application/pdf' }],
+      {
+        share: opts.share,
+        title: store.deliver.title || 'GoldSmith report',
+        type: { description: 'PDF report', accept: { 'application/pdf': ['.pdf'] } },
+      },
+    )
     useAppStore.getState().patchDeliver({ generating: false })
   } catch (err) {
     useAppStore.getState().patchDeliver({
@@ -1228,6 +1261,43 @@ export async function generateReportPDF(): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     })
   }
+}
+
+// ---------- local backup & restore (plan §2.8) ----------
+
+const BACKUP_SAVE_TYPE: SaveType = {
+  description: 'GoldSmith Studio backup',
+  accept: { 'application/json': ['.json'] },
+}
+
+/**
+ * Export every on-device store (parts, settings, materials, history, kv) as one
+ * versioned JSON backup file — the local insurance copy, no cloud. Throws on
+ * failure so the caller can surface the message.
+ */
+export async function exportBackup(opts: { share?: boolean } = {}): Promise<void> {
+  const json = serializeBackup(await dumpDatabase())
+  const name = `goldsmith-backup-${new Date().toISOString().slice(0, 10)}.json`
+  await deliverFiles([{ data: json, name, mime: 'application/json' }], {
+    share: opts.share,
+    title: 'GoldSmith Studio backup',
+    type: BACKUP_SAVE_TYPE,
+  })
+}
+
+/**
+ * Pick a backup file, validate it, replace ALL on-device data, then reload so
+ * every store and store-slice rehydrates from the restored database. Returns
+ * false if the user cancelled the file picker; throws (without touching the
+ * database) if the file is invalid.
+ */
+export async function importBackup(): Promise<boolean> {
+  const text = await pickTextFile('application/json,.json')
+  if (text === null) return false
+  const dump = parseBackup(text) // validates version + shape; throws on garbage
+  await restoreDatabase(dump)
+  location.reload()
+  return true
 }
 
 /** Copy the plain-text version of the current report to the clipboard. */

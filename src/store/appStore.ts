@@ -127,6 +127,16 @@ export interface DeliverState {
   error: string | null
 }
 
+/** Service-worker / install lifecycle for the install/update banner (§2.8). */
+export interface PwaState {
+  /** A new SW is waiting — offer reload-to-update. */
+  needRefresh: boolean
+  /** First-load precache finished — the app now works offline. */
+  offlineReady: boolean
+  /** A native install prompt is available (Chromium). */
+  canInstall: boolean
+}
+
 interface AppState {
   tab: WorkflowTab
   parts: PartInfo[]
@@ -136,6 +146,8 @@ interface AppState {
   gizmoMode: GizmoMode
   gridVisible: boolean
   background: string
+  /** Accent-colour preset id (see src/app/theme.ts). */
+  accent: string
   turntable: boolean
   postFX: boolean
   importing: boolean
@@ -146,6 +158,7 @@ interface AppState {
   measure: MeasureState
   resize: ResizeState
   deliver: DeliverState
+  pwa: PwaState
 
   setTab: (tab: WorkflowTab) => void
   setParts: (parts: PartInfo[]) => void
@@ -155,6 +168,7 @@ interface AppState {
   setGizmoMode: (m: GizmoMode) => void
   setGridVisible: (v: boolean) => void
   setBackground: (b: string) => void
+  setAccent: (a: string) => void
   setTurntable: (v: boolean) => void
   setPostFX: (v: boolean) => void
   setImporting: (v: boolean, error?: string | null) => void
@@ -165,6 +179,7 @@ interface AppState {
   patchSection: (patch: Partial<SectionState>) => void
   patchResize: (patch: Partial<ResizeState>) => void
   patchDeliver: (patch: Partial<DeliverState>) => void
+  patchPwa: (patch: Partial<PwaState>) => void
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -176,6 +191,7 @@ export const useAppStore = create<AppState>((set) => ({
   gizmoMode: 'translate',
   gridVisible: true,
   background: 'studio',
+  accent: 'gold',
   turntable: false,
   postFX: true,
   importing: false,
@@ -251,6 +267,11 @@ export const useAppStore = create<AppState>((set) => ({
     copied: false,
     error: null,
   },
+  pwa: {
+    needRefresh: false,
+    offlineReady: false,
+    canInstall: false,
+  },
 
   setTab: (tab) => set({ tab }),
   setParts: (parts) => set({ parts }),
@@ -260,6 +281,7 @@ export const useAppStore = create<AppState>((set) => ({
   setGizmoMode: (gizmoMode) => set({ gizmoMode }),
   setGridVisible: (gridVisible) => set({ gridVisible }),
   setBackground: (background) => set({ background }),
+  setAccent: (accent) => set({ accent }),
   setTurntable: (turntable) => set({ turntable }),
   setPostFX: (postFX) => set({ postFX }),
   setImporting: (importing, importError = null) => set({ importing, importError }),
@@ -271,4 +293,5 @@ export const useAppStore = create<AppState>((set) => ({
     set((s) => ({ measure: { ...s.measure, section: { ...s.measure.section, ...patch } } })),
   patchResize: (patch) => set((s) => ({ resize: { ...s.resize, ...patch } })),
   patchDeliver: (patch) => set((s) => ({ deliver: { ...s.deliver, ...patch } })),
+  patchPwa: (patch) => set((s) => ({ pwa: { ...s.pwa, ...patch } })),
 }))

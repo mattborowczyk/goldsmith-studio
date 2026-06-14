@@ -1,21 +1,60 @@
 import { useRef, useState } from 'react'
-import { FolderOpen, Scaling } from 'lucide-react'
-import { getEngine, importFiles } from '@/app/studio'
+import { Download, FolderOpen, Loader2, Scaling, Share2, Upload } from 'lucide-react'
+import { exportBackup, getEngine, importBackup, importFiles, setAccent } from '@/app/studio'
+import { canShareFiles } from '@/app/files'
+import { ACCENTS } from '@/app/theme'
 import type { ImportUnit } from '@/core/types'
 import { useAppStore } from '@/store/appStore'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
+import { cn } from '@/lib/utils'
+
+const SHARE_SUPPORTED = canShareFiles([
+  new File(['{}'], 'goldsmith-backup.json', { type: 'application/json' }),
+])
 
 export function ImportPanel() {
   const fileInput = useRef<HTMLInputElement>(null)
   const [unit, setUnit] = useState<ImportUnit>('mm')
   const [mode, setMode] = useState<'append' | 'replace'>('append')
   const [scalePct, setScalePct] = useState('100')
+  const [backupBusy, setBackupBusy] = useState<'export' | 'share' | 'restore' | null>(null)
+  const [backupError, setBackupError] = useState<string | null>(null)
   const importing = useAppStore((s) => s.importing)
   const importError = useAppStore((s) => s.importError)
   const selectedId = useAppStore((s) => s.selectedId)
   const parts = useAppStore((s) => s.parts)
+  const accent = useAppStore((s) => s.accent)
   const selected = parts.find((p) => p.id === selectedId)
+
+  async function runBackup(kind: 'export' | 'share') {
+    setBackupBusy(kind)
+    setBackupError(null)
+    try {
+      await exportBackup({ share: kind === 'share' })
+    } catch (err) {
+      setBackupError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBackupBusy(null)
+    }
+  }
+
+  async function runRestore() {
+    const ok = window.confirm(
+      'Restore from a backup? This replaces all parts, materials, history and settings currently on this device.',
+    )
+    if (!ok) return
+    setBackupBusy('restore')
+    setBackupError(null)
+    try {
+      // on success the page reloads; only failures fall through to here
+      await importBackup()
+      setBackupBusy(null)
+    } catch (err) {
+      setBackupError(err instanceof Error ? err.message : String(err))
+      setBackupBusy(null)
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -102,6 +141,75 @@ export function ImportPanel() {
           </div>
         </div>
       )}
+
+      {/* Backup & restore — a single versioned JSON of everything on-device (§2.8) */}
+      <div className="flex flex-col gap-2 border-t border-border/60 pt-4">
+        <label className="text-xs font-medium text-muted-foreground">Backup &amp; restore</label>
+        <p className="text-xs text-muted-foreground">
+          Save every part, material, calculation and setting to one file — your local insurance, no
+          cloud.
+        </p>
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            className="flex-1"
+            disabled={backupBusy !== null}
+            onClick={() => void runBackup('export')}
+          >
+            {backupBusy === 'export' ? <Loader2 className="animate-spin" /> : <Download />}
+            Back up
+          </Button>
+          {SHARE_SUPPORTED && (
+            <Button
+              variant="secondary"
+              size="icon"
+              title="Share backup"
+              aria-label="Share backup"
+              disabled={backupBusy !== null}
+              onClick={() => void runBackup('share')}
+            >
+              {backupBusy === 'share' ? <Loader2 className="animate-spin" /> : <Share2 />}
+            </Button>
+          )}
+        </div>
+        <Button
+          variant="outline"
+          disabled={backupBusy !== null}
+          onClick={() => void runRestore()}
+        >
+          {backupBusy === 'restore' ? <Loader2 className="animate-spin" /> : <Upload />}
+          Restore…
+        </Button>
+        {backupError && (
+          <p className="rounded-lg bg-destructive/15 px-3 py-2 text-xs text-destructive">
+            {backupError}
+          </p>
+        )}
+      </div>
+
+      {/* Accent theming (§2.8): swap the warm-metal hue, dark studio stays default */}
+      <div className="flex flex-col gap-2 border-t border-border/60 pt-4">
+        <label className="text-xs font-medium text-muted-foreground">Accent</label>
+        <div className="flex flex-wrap gap-2">
+          {ACCENTS.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              title={a.label}
+              aria-label={a.label}
+              aria-pressed={accent === a.id}
+              onClick={() => setAccent(a.id)}
+              className={cn(
+                'size-8 rounded-full border transition-all',
+                accent === a.id
+                  ? 'border-foreground ring-2 ring-ring'
+                  : 'border-border/60 hover:border-foreground/50',
+              )}
+              style={{ backgroundColor: `oklch(0.78 ${a.chroma} ${a.hue})` }}
+            />
+          ))}
+        </div>
+      </div>
     </div>
   )
 }

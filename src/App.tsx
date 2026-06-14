@@ -9,6 +9,7 @@ import { BuildPanel } from '@/components/panels/BuildPanel'
 import { ResizePanel } from '@/components/panels/ResizePanel'
 import { CostPanel } from '@/components/panels/CostPanel'
 import { DeliverPanel } from '@/components/panels/DeliverPanel'
+import { PwaBanner } from '@/components/PwaBanner'
 import { useAppStore } from '@/store/appStore'
 
 const TAB_TITLES: Record<string, string> = {
@@ -43,6 +44,8 @@ export default function App() {
         {tab === 'cost' && <CostPanel />}
         {tab === 'deliver' && <DeliverPanel />}
       </aside>
+
+      <PwaBanner />
     </div>
   )
 }

@@ -19,6 +19,8 @@ export interface SavedSettings {
   displayMode: DisplayMode
   background: string
   gridVisible: boolean
+  /** Accent-colour preset id (see src/app/theme.ts); absent = the gold default. */
+  accent?: string
 }
 
 interface StudioDB extends DBSchema {
@@ -144,4 +146,66 @@ export async function kvSet(key: string, value: unknown): Promise<void> {
 export async function kvGet<T>(key: string): Promise<T | undefined> {
   const db = await getDB()
   return (await db.get('kv', key)) as T | undefined
+}
+
+// ---------- full-database backup/restore (plan §2.8) ----------
+
+/** A complete snapshot of every IndexedDB store, ready to (de)serialize. */
+export interface DatabaseDump {
+  parts: SavedPart[]
+  /** Out-of-line keyed store: key/value pairs. */
+  settings: { key: string; value: SavedSettings }[]
+  materials: Material[]
+  history: HistoryEntry[]
+  /** Generic store enumerated by key — never hardcode the key list. */
+  kv: { key: string; value: unknown }[]
+}
+
+const ALL_STORES = ['parts', 'settings', 'materials', 'history', 'kv'] as const
+
+/**
+ * Read every store into a plain object within ONE read-only transaction so the
+ * snapshot is internally consistent (settings + kv enumerated by key). getAll and
+ * getAllKeys share the store's key order, so zipping them keeps key↔value paired.
+ */
+export async function dumpDatabase(): Promise<DatabaseDump> {
+  const db = await getDB()
+  const tx = db.transaction(ALL_STORES, 'readonly')
+  const parts = await tx.objectStore('parts').getAll()
+  const materials = await tx.objectStore('materials').getAll()
+  const history = await tx.objectStore('history').getAll()
+  const settingsStore = tx.objectStore('settings')
+  const [settingsKeys, settingsVals] = await Promise.all([
+    settingsStore.getAllKeys(),
+    settingsStore.getAll(),
+  ])
+  const settings = settingsKeys.map((key, i) => ({ key: String(key), value: settingsVals[i] }))
+  const kvStore = tx.objectStore('kv')
+  const [kvKeys, kvVals] = await Promise.all([kvStore.getAllKeys(), kvStore.getAll()])
+  const kv = kvKeys.map((key, i) => ({ key: String(key), value: kvVals[i] }))
+  await tx.done
+  return { parts, settings, materials, history, kv }
+}
+
+/**
+ * Replace the entire database with a dump in ONE read-write transaction — the
+ * restore is all-or-nothing: if any write fails the transaction aborts and the
+ * existing data is left untouched. Requests are issued without intermediate
+ * awaits so the transaction can't auto-commit early.
+ */
+export async function restoreDatabase(dump: DatabaseDump): Promise<void> {
+  const db = await getDB()
+  const tx = db.transaction(ALL_STORES, 'readwrite')
+  for (const store of ['parts', 'materials', 'history'] as const) {
+    const os = tx.objectStore(store)
+    os.clear()
+    for (const value of dump[store]) os.put(value as never)
+  }
+  const settingsStore = tx.objectStore('settings')
+  settingsStore.clear()
+  for (const { key, value } of dump.settings) settingsStore.put(value, key)
+  const kvStore = tx.objectStore('kv')
+  kvStore.clear()
+  for (const { key, value } of dump.kv) kvStore.put(value, key)
+  await tx.done
 }
