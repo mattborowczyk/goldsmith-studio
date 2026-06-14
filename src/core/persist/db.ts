@@ -19,6 +19,8 @@ export interface SavedSettings {
   displayMode: DisplayMode
   background: string
   gridVisible: boolean
+  /** Accent-colour preset id (see src/app/theme.ts); absent = the gold default. */
+  accent?: string
 }
 
 interface StudioDB extends DBSchema {
@@ -144,4 +146,61 @@ export async function kvSet(key: string, value: unknown): Promise<void> {
 export async function kvGet<T>(key: string): Promise<T | undefined> {
   const db = await getDB()
   return (await db.get('kv', key)) as T | undefined
+}
+
+// ---------- full-database backup/restore (plan §2.8) ----------
+
+/** A complete snapshot of every IndexedDB store, ready to (de)serialize. */
+export interface DatabaseDump {
+  parts: SavedPart[]
+  /** Out-of-line keyed store: key/value pairs. */
+  settings: { key: string; value: SavedSettings }[]
+  materials: Material[]
+  history: HistoryEntry[]
+  /** Generic store enumerated by key — never hardcode the key list. */
+  kv: { key: string; value: unknown }[]
+}
+
+/** Read every store into a plain object (settings + kv enumerated by key). */
+export async function dumpDatabase(): Promise<DatabaseDump> {
+  const db = await getDB()
+  const [parts, materials, history] = await Promise.all([
+    db.getAll('parts'),
+    db.getAll('materials'),
+    db.getAll('history'),
+  ])
+  const settingsKeys = await db.getAllKeys('settings')
+  const settings = await Promise.all(
+    settingsKeys.map(async (key) => ({
+      key: String(key),
+      value: (await db.get('settings', key))!,
+    })),
+  )
+  const kvKeys = await db.getAllKeys('kv')
+  const kv = await Promise.all(
+    kvKeys.map(async (key) => ({ key: String(key), value: await db.get('kv', key) })),
+  )
+  return { parts, settings, materials, history, kv }
+}
+
+/** Replace the entire database contents with a dump (clears each store first). */
+export async function restoreDatabase(dump: DatabaseDump): Promise<void> {
+  const db = await getDB()
+  // inline-key stores
+  for (const store of ['parts', 'materials', 'history'] as const) {
+    const tx = db.transaction(store, 'readwrite')
+    await tx.store.clear()
+    for (const value of dump[store]) await tx.store.put(value as never)
+    await tx.done
+  }
+  // out-of-line keyed stores
+  const sTx = db.transaction('settings', 'readwrite')
+  await sTx.store.clear()
+  for (const { key, value } of dump.settings) await sTx.store.put(value, key)
+  await sTx.done
+
+  const kTx = db.transaction('kv', 'readwrite')
+  await kTx.store.clear()
+  for (const { key, value } of dump.kv) await kTx.store.put(value, key)
+  await kTx.done
 }

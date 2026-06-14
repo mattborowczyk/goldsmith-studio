@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { Box, Check, Copy, Download, FileText, Loader2, Trash2, Upload } from 'lucide-react'
+import { Box, Check, Copy, Download, FileText, Loader2, Share2, Trash2, Upload } from 'lucide-react'
 import {
   copyReportText,
   exportMesh,
@@ -8,6 +8,7 @@ import {
   setBranding,
   setLogoFromFile,
 } from '@/app/studio'
+import { canShareFiles } from '@/app/files'
 import type { MeshFormat } from '@/core/io/exporters'
 import type { BillingIncrement, ReportTemplate } from '@/core/report/reportModel'
 import { useAppStore } from '@/store/appStore'
@@ -38,6 +39,9 @@ const BILLING: { id: BillingIncrement; label: string }[] = [
 
 const textareaClass =
   'w-full rounded-md border border-border bg-input/50 px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring'
+
+// Web Share (§2.8): send an exported STL/PDF straight to Mail/AirDrop on iPad.
+const SHARE_SUPPORTED = canShareFiles([new File([''], 'export.stl', { type: 'model/stl' })])
 
 function ExportSection() {
   const d = useAppStore((s) => s.deliver)
@@ -94,10 +98,27 @@ function ExportSection() {
         </label>
       )}
 
-      <Button disabled={d.exporting || parts.length === 0} onClick={() => void exportMesh()}>
-        {d.exporting ? <Loader2 className="animate-spin" /> : <Box />}
-        Export {d.exportFormat.toUpperCase()}
-      </Button>
+      <div className="flex gap-2">
+        <Button
+          className="flex-1"
+          disabled={d.exporting || parts.length === 0}
+          onClick={() => void exportMesh()}
+        >
+          {d.exporting ? <Loader2 className="animate-spin" /> : <Box />}
+          Export {d.exportFormat.toUpperCase()}
+        </Button>
+        {SHARE_SUPPORTED && (
+          <Button
+            variant="secondary"
+            size="icon"
+            title="Share export"
+            disabled={d.exporting || parts.length === 0}
+            onClick={() => void exportMesh({ share: true })}
+          >
+            <Share2 />
+          </Button>
+        )}
+      </div>
       <p className="text-[10px] text-muted-foreground/70">
         PLY &amp; 3MF arrive in a later release.
       </p>
@@ -259,10 +280,27 @@ function ReportSection() {
         />
       </label>
 
-      <Button disabled={d.generating || parts.length === 0} onClick={() => void generateReportPDF()}>
-        {d.generating ? <Loader2 className="animate-spin" /> : <FileText />}
-        Generate PDF
-      </Button>
+      <div className="flex gap-2">
+        <Button
+          className="flex-1"
+          disabled={d.generating || parts.length === 0}
+          onClick={() => void generateReportPDF()}
+        >
+          {d.generating ? <Loader2 className="animate-spin" /> : <FileText />}
+          Generate PDF
+        </Button>
+        {SHARE_SUPPORTED && (
+          <Button
+            variant="secondary"
+            size="icon"
+            title="Share PDF"
+            disabled={d.generating || parts.length === 0}
+            onClick={() => void generateReportPDF({ share: true })}
+          >
+            <Share2 />
+          </Button>
+        )}
+      </div>
       <Button
         variant="secondary"
         size="sm"
