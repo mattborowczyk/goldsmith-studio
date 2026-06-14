@@ -13,6 +13,8 @@ export interface SavedPart {
   /** Per-part display material override; absent/null follows the global mode. */
   material?: MaterialPreset | null
   flatShading?: boolean
+  /** Per-vertex rgb (0..1) from a coloured import (PLY scans); absent if none. */
+  colors?: Float32Array | null
 }
 
 export interface SavedSettings {
@@ -70,6 +72,7 @@ export async function loadScene(): Promise<
     data: MeshData
     material: MaterialPreset | null
     flatShading: boolean
+    colors: Float32Array | null
   }[]
 > {
   const db = await getDB()
@@ -83,6 +86,7 @@ export async function loadScene(): Promise<
     data: { positions: p.positions, indices: p.indices },
     material: p.material ?? null,
     flatShading: p.flatShading ?? false,
+    colors: p.colors ?? null,
   }))
 }
 

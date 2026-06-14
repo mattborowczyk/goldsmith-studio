@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { makeCube } from '../geometry/testFixtures'
-import { exportOBJ, exportSTL, mergeMeshData, scaleMeshDataCopy } from './exporters'
+import { export3MF, exportOBJ, exportPLY, exportSTL, mergeMeshData, scaleMeshDataCopy } from './exporters'
 
 /** Minimal binary-STL reader: triangle count + per-vertex bbox. */
 function readSTL(bytes: Uint8Array) {
@@ -77,6 +77,83 @@ describe('scaleMeshDataCopy', () => {
     expect(scaled.positions).not.toBe(cube.positions)
     expect(scaled.positions[3]).toBeCloseTo(original[3] * 1.02, 5)
     expect(scaled.indices).toEqual(cube.indices)
+  })
+})
+
+/** Minimal binary-PLY reader: vertex/triangle counts, bbox, optional colours. */
+function readPLY(bytes: Uint8Array) {
+  const text = new TextDecoder('latin1').decode(bytes)
+  const headerEnd = text.indexOf('end_header\n') + 'end_header\n'.length
+  const header = text.slice(0, headerEnd)
+  const vertexCount = Number(/element vertex (\d+)/.exec(header)![1])
+  const faceCount = Number(/element face (\d+)/.exec(header)![1])
+  const hasColor = /property uchar red/.test(header)
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  let off = headerEnd
+  const min = [Infinity, Infinity, Infinity]
+  const max = [-Infinity, -Infinity, -Infinity]
+  const colors: number[][] = []
+  for (let v = 0; v < vertexCount; v++) {
+    for (let k = 0; k < 3; k++) {
+      const c = view.getFloat32(off, true)
+      off += 4
+      if (c < min[k]) min[k] = c
+      if (c > max[k]) max[k] = c
+    }
+    if (hasColor) {
+      colors.push([view.getUint8(off), view.getUint8(off + 1), view.getUint8(off + 2)])
+      off += 3
+    }
+  }
+  let tris = 0
+  for (let f = 0; f < faceCount; f++) {
+    const n = view.getUint8(off)
+    off += 1 + n * 4
+    tris += n - 2
+  }
+  return { vertexCount, tris, min, max, colors, hasColor }
+}
+
+describe('binary PLY writer', () => {
+  it('round-trips vertex/triangle counts and bounding box', () => {
+    const cube = makeCube(10, [2, 3, 4])
+    const ply = readPLY(exportPLY(cube))
+    expect(ply.vertexCount).toBe(8)
+    expect(ply.tris).toBe(12)
+    expect(ply.min).toEqual([2, 3, 4])
+    expect(ply.max).toEqual([12, 13, 14])
+    expect(ply.hasColor).toBe(false)
+  })
+
+  it('preserves per-vertex colours', () => {
+    const cube = makeCube(10)
+    // 8 vertices × rgb in 0..1
+    const colors = new Float32Array(8 * 3)
+    for (let i = 0; i < 8; i++) {
+      colors[i * 3] = i / 7 // red ramps 0→1 across the corners
+      colors[i * 3 + 1] = 0.5
+      colors[i * 3 + 2] = 1 - i / 7
+    }
+    const ply = readPLY(exportPLY(cube, colors))
+    expect(ply.hasColor).toBe(true)
+    expect(ply.colors).toHaveLength(8)
+    expect(ply.colors[0]).toEqual([0, 128, 255]) // round(0*255), round(.5*255), round(1*255)
+    expect(ply.colors[7]).toEqual([255, 128, 0])
+  })
+})
+
+describe('3MF writer', () => {
+  it('packages a valid stored zip with the model XML', () => {
+    const cube = makeCube(10)
+    const bytes = export3MF([{ name: 'cube', mesh: cube }])
+    // ZIP local-file-header signature "PK\x03\x04"
+    expect([bytes[0], bytes[1], bytes[2], bytes[3]]).toEqual([0x50, 0x4b, 0x03, 0x04])
+    // STORE (uncompressed) → the XML is present verbatim and countable
+    const text = new TextDecoder('latin1').decode(bytes)
+    expect(text).toContain('3dmodel.model')
+    expect((text.match(/<vertex /g) ?? []).length).toBe(cube.positions.length / 3)
+    expect((text.match(/<triangle /g) ?? []).length).toBe(cube.indices.length / 3)
+    expect(text).toContain('unit="millimeter"')
   })
 })
 

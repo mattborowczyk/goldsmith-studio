@@ -65,6 +65,23 @@ export interface SectionState {
   range: { min: number; max: number }
 }
 
+/** Wall-thickness heatmap (plan §2.3): transient surface overlay + threshold. */
+export interface HeatmapState {
+  /** A heatmap is painted on a part right now. */
+  enabled: boolean
+  /** Worker compute in flight. */
+  busy: boolean
+  /** Compute progress 0..1. */
+  progress: number
+  /** Minimum-thickness threshold (mm): walls at/under this go hard red. */
+  thresholdMm: number
+  /** Measured thickness range of the active heatmap (mm), or null. */
+  range: { min: number; max: number } | null
+  /** Part the heatmap belongs to. */
+  partId: string | null
+  error: string | null
+}
+
 export interface MeasureState {
   /** Pick mode armed: viewport taps place measurement points. */
   picking: boolean
@@ -74,6 +91,7 @@ export interface MeasureState {
   color: string
   section: SectionState
   innerDiameter: { diameter: number; axis: string } | null | 'none'
+  heatmap: HeatmapState
 }
 
 export interface ResizeState {
@@ -177,6 +195,7 @@ interface AppState {
   patchCost: (patch: Partial<CostState>) => void
   patchMeasure: (patch: Partial<MeasureState>) => void
   patchSection: (patch: Partial<SectionState>) => void
+  patchHeatmap: (patch: Partial<HeatmapState>) => void
   patchResize: (patch: Partial<ResizeState>) => void
   patchDeliver: (patch: Partial<DeliverState>) => void
   patchPwa: (patch: Partial<PwaState>) => void
@@ -229,6 +248,15 @@ export const useAppStore = create<AppState>((set) => ({
       range: { min: -50, max: 50 },
     },
     innerDiameter: null,
+    heatmap: {
+      enabled: false,
+      busy: false,
+      progress: 0,
+      thresholdMm: 0.6,
+      range: null,
+      partId: null,
+      error: null,
+    },
   },
   resize: {
     mode: 'uniform',
@@ -291,6 +319,8 @@ export const useAppStore = create<AppState>((set) => ({
   patchMeasure: (patch) => set((s) => ({ measure: { ...s.measure, ...patch } })),
   patchSection: (patch) =>
     set((s) => ({ measure: { ...s.measure, section: { ...s.measure.section, ...patch } } })),
+  patchHeatmap: (patch) =>
+    set((s) => ({ measure: { ...s.measure, heatmap: { ...s.measure.heatmap, ...patch } } })),
   patchResize: (patch) => set((s) => ({ resize: { ...s.resize, ...patch } })),
   patchDeliver: (patch) => set((s) => ({ deliver: { ...s.deliver, ...patch } })),
   patchPwa: (patch) => set((s) => ({ pwa: { ...s.pwa, ...patch } })),

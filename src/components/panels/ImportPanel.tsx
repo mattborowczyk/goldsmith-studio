@@ -80,7 +80,7 @@ export function ImportPanel() {
         ref={fileInput}
         type="file"
         multiple
-        accept=".stl,.obj,.glb,.gltf"
+        accept=".stl,.obj,.glb,.gltf,.ply,.3mf"
         className="hidden"
         onChange={async (e) => {
           const files = [...(e.target.files ?? [])]
@@ -93,7 +93,8 @@ export function ImportPanel() {
         {importing ? 'Importing…' : 'Choose files…'}
       </Button>
       <p className="text-xs text-muted-foreground">
-        STL · OBJ · GLB/GLTF — or drag &amp; drop anywhere in the viewport.
+        STL · OBJ · GLB/GLTF · PLY · 3MF — or drag &amp; drop anywhere in the viewport. PLY vertex
+        colours (intraoral scans) are shown.
       </p>
 
       {importError && (
