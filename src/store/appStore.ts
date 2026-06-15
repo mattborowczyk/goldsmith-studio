@@ -122,6 +122,31 @@ export interface ResizeState {
   error: string | null
 }
 
+/** Grillz/dental Fit tab (plan §3.1): cement-gap offset + clearance map. */
+export interface FitState {
+  /** Tooth scan part the offset is generated from. */
+  scanPartId: string | null
+  /** Sculpted grillz shell — boolean operand + clearance-map target. */
+  shellPartId: string | null
+  /** Cement gap in mm (the outward offset). */
+  clearanceMm: number
+  /** Half-width of the green tolerance band around the clearance, in mm. */
+  bandHalfMm: number
+  /** A Manifold/clearance job is in flight. */
+  busy: boolean
+  /** Job progress 0..1. */
+  progress: number
+  /** Current stage label for the busy UI. */
+  stage: string | null
+  /** A clearance map is painted right now. */
+  mapEnabled: boolean
+  /** Signed gap range of the active map (mm), or null. */
+  mapRange: { min: number; max: number } | null
+  /** Part the clearance map is painted on. */
+  mapPartId: string | null
+  error: string | null
+}
+
 /** Deliver tab: mesh export + branded report generation (plan §2.7). */
 export interface DeliverState {
   // mesh export
@@ -175,6 +200,7 @@ interface AppState {
   cost: CostState
   measure: MeasureState
   resize: ResizeState
+  fit: FitState
   deliver: DeliverState
   pwa: PwaState
 
@@ -197,6 +223,7 @@ interface AppState {
   patchSection: (patch: Partial<SectionState>) => void
   patchHeatmap: (patch: Partial<HeatmapState>) => void
   patchResize: (patch: Partial<ResizeState>) => void
+  patchFit: (patch: Partial<FitState>) => void
   patchDeliver: (patch: Partial<DeliverState>) => void
   patchPwa: (patch: Partial<PwaState>) => void
 }
@@ -277,6 +304,19 @@ export const useAppStore = create<AppState>((set) => ({
     canUndo: false,
     error: null,
   },
+  fit: {
+    scanPartId: null,
+    shellPartId: null,
+    clearanceMm: 0.05,
+    bandHalfMm: 0.02,
+    busy: false,
+    progress: 0,
+    stage: null,
+    mapEnabled: false,
+    mapRange: null,
+    mapPartId: null,
+    error: null,
+  },
   deliver: {
     exportFormat: 'stl',
     exportScope: 'merged',
@@ -322,6 +362,7 @@ export const useAppStore = create<AppState>((set) => ({
   patchHeatmap: (patch) =>
     set((s) => ({ measure: { ...s.measure, heatmap: { ...s.measure.heatmap, ...patch } } })),
   patchResize: (patch) => set((s) => ({ resize: { ...s.resize, ...patch } })),
+  patchFit: (patch) => set((s) => ({ fit: { ...s.fit, ...patch } })),
   patchDeliver: (patch) => set((s) => ({ deliver: { ...s.deliver, ...patch } })),
   patchPwa: (patch) => set((s) => ({ pwa: { ...s.pwa, ...patch } })),
 }))

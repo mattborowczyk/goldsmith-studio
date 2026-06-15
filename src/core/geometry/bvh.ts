@@ -232,6 +232,164 @@ export function raycastNearest(
   return closest
 }
 
+// ---------- nearest-surface (closest-point) query ----------
+
+/** Result of a closest-point query: the shared scratch is reused per call. */
+export interface ClosestHit {
+  /** Unsigned distance from the query point to the nearest surface. */
+  dist: number
+  /** Index of the nearest triangle, or -1 when the mesh is empty. */
+  tri: number
+  /** The nearest point on that triangle. */
+  px: number
+  py: number
+  pz: number
+}
+
+const cpStack = new Int32Array(64)
+const cpHit: ClosestHit = { dist: Infinity, tri: -1, px: 0, py: 0, pz: 0 }
+// scratch closest-point written by pointTri2, copied into cpHit on improvement
+let sx = 0, sy = 0, sz = 0
+
+/** Squared distance from a point to a node's AABB (0 when inside). */
+function pointAabb2(
+  bvh: BVH, node: number, x: number, y: number, z: number,
+): number {
+  const b = node * 6
+  let dx = 0, dy = 0, dz = 0
+  if (x < bvh.nodeBounds[b]) dx = bvh.nodeBounds[b] - x
+  else if (x > bvh.nodeBounds[b + 3]) dx = x - bvh.nodeBounds[b + 3]
+  if (y < bvh.nodeBounds[b + 1]) dy = bvh.nodeBounds[b + 1] - y
+  else if (y > bvh.nodeBounds[b + 4]) dy = y - bvh.nodeBounds[b + 4]
+  if (z < bvh.nodeBounds[b + 2]) dz = bvh.nodeBounds[b + 2] - z
+  else if (z > bvh.nodeBounds[b + 5]) dz = z - bvh.nodeBounds[b + 5]
+  return dx * dx + dy * dy + dz * dz
+}
+
+/**
+ * Squared distance from a point to a triangle; writes the closest point on the
+ * triangle to the sx/sy/sz scratch. Ericson, *Real-Time Collision Detection* —
+ * the Voronoi-region method (vertices, edges, then the interior face).
+ */
+function pointTri2(
+  positions: Float32Array, indices: Uint32Array, tri: number,
+  x: number, y: number, z: number,
+): number {
+  const ia = indices[tri * 3] * 3
+  const ib = indices[tri * 3 + 1] * 3
+  const ic = indices[tri * 3 + 2] * 3
+  const ax = positions[ia], ay = positions[ia + 1], az = positions[ia + 2]
+  const bx = positions[ib], by = positions[ib + 1], bz = positions[ib + 2]
+  const cx = positions[ic], cy = positions[ic + 1], cz = positions[ic + 2]
+
+  const abx = bx - ax, aby = by - ay, abz = bz - az
+  const acx = cx - ax, acy = cy - ay, acz = cz - az
+  const apx = x - ax, apy = y - ay, apz = z - az
+  const d1 = abx * apx + aby * apy + abz * apz
+  const d2 = acx * apx + acy * apy + acz * apz
+  if (d1 <= 0 && d2 <= 0) { sx = ax; sy = ay; sz = az; return dist2(x, y, z, ax, ay, az) }
+
+  const bpx = x - bx, bpy = y - by, bpz = z - bz
+  const d3 = abx * bpx + aby * bpy + abz * bpz
+  const d4 = acx * bpx + acy * bpy + acz * bpz
+  if (d3 >= 0 && d4 <= d3) { sx = bx; sy = by; sz = bz; return dist2(x, y, z, bx, by, bz) }
+
+  const vc = d1 * d4 - d3 * d2
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+    const v = d1 / (d1 - d3)
+    sx = ax + v * abx; sy = ay + v * aby; sz = az + v * abz
+    return dist2(x, y, z, sx, sy, sz)
+  }
+
+  const cpx = x - cx, cpy = y - cy, cpz = z - cz
+  const d5 = abx * cpx + aby * cpy + abz * cpz
+  const d6 = acx * cpx + acy * cpy + acz * cpz
+  if (d6 >= 0 && d5 <= d6) { sx = cx; sy = cy; sz = cz; return dist2(x, y, z, cx, cy, cz) }
+
+  const vb = d5 * d2 - d1 * d6
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+    const w = d2 / (d2 - d6)
+    sx = ax + w * acx; sy = ay + w * acy; sz = az + w * acz
+    return dist2(x, y, z, sx, sy, sz)
+  }
+
+  const va = d3 * d6 - d5 * d4
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+    sx = bx + w * (cx - bx); sy = by + w * (cy - by); sz = bz + w * (cz - bz)
+    return dist2(x, y, z, sx, sy, sz)
+  }
+
+  // interior face region
+  const denom = 1 / (va + vb + vc)
+  const v = vb * denom
+  const w = vc * denom
+  sx = ax + abx * v + acx * w
+  sy = ay + aby * v + acy * w
+  sz = az + abz * v + acz * w
+  return dist2(x, y, z, sx, sy, sz)
+}
+
+function dist2(x: number, y: number, z: number, ax: number, ay: number, az: number): number {
+  const dx = x - ax, dy = y - ay, dz = z - az
+  return dx * dx + dy * dy + dz * dz
+}
+
+/**
+ * Nearest point on the mesh to (x,y,z): BVH-accelerated, pruning any node whose
+ * AABB is already further than the best hit. Returns a shared mutable ClosestHit
+ * (valid only until the next call) — for the grillz clearance map, which queries
+ * one shell vertex against the tooth-scan surface at a time. Three-free.
+ */
+export function closestPoint(
+  bvh: BVH, positions: Float32Array, indices: Uint32Array,
+  x: number, y: number, z: number,
+): ClosestHit {
+  cpHit.dist = Infinity
+  cpHit.tri = -1
+  if (bvh.nodeUsed === 0) return cpHit
+  let best2 = Infinity
+
+  let sp = 0
+  cpStack[sp++] = 0
+  while (sp > 0) {
+    const node = cpStack[--sp]
+    if (pointAabb2(bvh, node, x, y, z) > best2) continue
+    const count = bvh.nodeCount[node]
+    if (count > 0) {
+      const first = bvh.nodeFirst[node]
+      for (let i = 0; i < count; i++) {
+        const tri = bvh.triOrder[first + i]
+        const d2 = pointTri2(positions, indices, tri, x, y, z)
+        if (d2 < best2) {
+          best2 = d2
+          cpHit.tri = tri
+          cpHit.px = sx; cpHit.py = sy; cpHit.pz = sz
+        }
+      }
+    } else {
+      const left = bvh.nodeLeft[node]
+      if (left >= 0) {
+        cpStack[sp++] = left
+        cpStack[sp++] = left + 1
+      }
+    }
+  }
+  cpHit.dist = Math.sqrt(best2)
+  return cpHit
+}
+
+/**
+ * Unsigned distance from a point to the nearest mesh surface. Thin wrapper over
+ * closestPoint — the documented scalar query the unit tests target.
+ */
+export function closestPointDistance(
+  bvh: BVH, positions: Float32Array, indices: Uint32Array,
+  x: number, y: number, z: number,
+): number {
+  return closestPoint(bvh, positions, indices, x, y, z).dist
+}
+
 /** Möller–Trumbore intersection; returns t (>minT) or Infinity. Double-sided. */
 function rayTri(
   positions: Float32Array, indices: Uint32Array, tri: number,

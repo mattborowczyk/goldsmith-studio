@@ -19,7 +19,7 @@ const TABS: { id: WorkflowTab; label: string; icon: React.ElementType; enabled: 
   { id: 'measure', label: 'Measure', icon: Ruler, enabled: true },
   { id: 'build', label: 'Build', icon: Shapes, enabled: true },
   { id: 'resize', label: 'Resize', icon: Scaling, enabled: true },
-  { id: 'fit', label: 'Fit', icon: Smile, enabled: false },
+  { id: 'fit', label: 'Fit', icon: Smile, enabled: true },
   { id: 'cost', label: 'Cost', icon: Coins, enabled: true },
   { id: 'deliver', label: 'Deliver', icon: FileText, enabled: true },
   { id: 'all', label: 'All', icon: LayoutGrid, enabled: false },

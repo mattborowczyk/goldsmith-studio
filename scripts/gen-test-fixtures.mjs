@@ -111,4 +111,70 @@ for (let i = 0; i < cubeV.length; i++) {
 for (const f of cubeF) ply += `3 ${f.join(' ')}\n`
 writeFileSync(join(outDir, 'colored-cube.ply'), ply)
 
-console.log('Wrote tapered-tube.stl + colored-cube.ply to public/test/')
+// ---------- grillz fit pair (binary STL) ----------
+//
+//  - public/test/tooth-arch.stl  a watertight "gum block" whose top carries three
+//    rounded tooth bumps — stands in for an intraoral tooth scan.
+//  - public/test/grillz-cap.stl  a watertight slab that follows the tooth contour,
+//    sitting a hair above it — stands in for a Nomad-sculpted grillz shell. Run the
+//    clearance map on the cap to see the gap; offset+subtract the arch to fit it.
+
+const ARCH = { x0: -12, x1: 12, y0: -6, y1: 6, nx: 49, ny: 13 }
+const TEETH = [-7, 0, 7] // tooth centres along x
+// bump height profile across x — sum of gaussians, on a flat gum base
+const archTop = (x) => 3 + TEETH.reduce((h, cx) => h + 3 * Math.exp(-((x - cx) ** 2) / (2 * 2 * 2)), 0)
+
+/**
+ * Closed (watertight) prism between a lower z-surface and an upper z-surface over
+ * the arch footprint: top + bottom triangulated grids plus four perimeter walls,
+ * each face wound outward via the reference-direction flip.
+ */
+function prismSolid({ x0, x1, y0, y1, nx, ny }, zBottom, zTop) {
+  const X = (i) => x0 + ((x1 - x0) * i) / (nx - 1)
+  const Y = (j) => y0 + ((y1 - y0) * j) / (ny - 1)
+  const T = (i, j) => [X(i), Y(j), zTop(X(i), Y(j))]
+  const B = (i, j) => [X(i), Y(j), zBottom(X(i), Y(j))]
+  const tris = []
+  const push = (a, b, c, rx, ry, rz) => {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2]
+    const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2]
+    const nx2 = uy * vz - uz * vy, ny2 = uz * vx - ux * vz, nz2 = ux * vy - uy * vx
+    if (nx2 * rx + ny2 * ry + nz2 * rz < 0) tris.push([a, c, b])
+    else tris.push([a, b, c])
+  }
+  for (let i = 0; i < nx - 1; i++) {
+    for (let j = 0; j < ny - 1; j++) {
+      // top surface — outward +z
+      push(T(i, j), T(i + 1, j), T(i + 1, j + 1), 0, 0, 1)
+      push(T(i, j), T(i + 1, j + 1), T(i, j + 1), 0, 0, 1)
+      // bottom surface — outward −z
+      push(B(i, j), B(i + 1, j), B(i + 1, j + 1), 0, 0, -1)
+      push(B(i, j), B(i + 1, j + 1), B(i, j + 1), 0, 0, -1)
+    }
+  }
+  // perimeter walls connect the top edge ring to the bottom edge ring
+  const wall = (a, b, rx, ry, rz) => {
+    push(a[0], a[1], b[1], rx, ry, rz)
+    push(a[0], b[1], b[0], rx, ry, rz)
+  }
+  for (let i = 0; i < nx - 1; i++) {
+    wall([T(i, 0), B(i, 0)], [T(i + 1, 0), B(i + 1, 0)], 0, -1, 0) // front (−y)
+    wall([T(i, ny - 1), B(i, ny - 1)], [T(i + 1, ny - 1), B(i + 1, ny - 1)], 0, 1, 0) // back (+y)
+  }
+  for (let j = 0; j < ny - 1; j++) {
+    wall([T(0, j), B(0, j)], [T(0, j + 1), B(0, j + 1)], -1, 0, 0) // left (−x)
+    wall([T(nx - 1, j), B(nx - 1, j)], [T(nx - 1, j + 1), B(nx - 1, j + 1)], 1, 0, 0) // right (+x)
+  }
+  return tris
+}
+
+const toothArch = prismSolid(ARCH, () => 0, (x) => archTop(x))
+writeBinarySTL(toothArch, join(outDir, 'tooth-arch.stl'))
+
+const CAP_GAP = 0.02 // the cap starts a hair off the teeth
+const CAP_THK = 1.0
+const capInner = (x) => archTop(x) + CAP_GAP
+const grillzCap = prismSolid(ARCH, capInner, (x) => capInner(x) + CAP_THK)
+writeBinarySTL(grillzCap, join(outDir, 'grillz-cap.stl'))
+
+console.log('Wrote tapered-tube.stl + colored-cube.ply + tooth-arch.stl + grillz-cap.stl to public/test/')
