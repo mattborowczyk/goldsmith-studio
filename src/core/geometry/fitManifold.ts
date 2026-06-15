@@ -111,18 +111,23 @@ export async function subtractMesh(
  * so the result seats cleanly along that path. We sweep the healed scan one full
  * axial extent down the −axis (minkowskiSum with a thin needle box) — filling
  * every void directly beneath an overhang, which is the geometric definition of
- * an undercut — and union the sweep back onto the scan. With `retentionMm > 0`
- * the *added* fill is eroded by that much (minkowskiDifference), leaving a thin
- * lip of original undercut for snap-fit grip while the original surface is left
+ * an undercut. The sweep is then clipped back to the scan's own axial range so it
+ * only fills voids and never extends the model below its lowest point (a clean
+ * scan is left unchanged), and unioned onto the scan. With `retentionMm > 0` the
+ * *added* fill is eroded by that much (minkowskiDifference), leaving a thin lip of
+ * original undercut for snap-fit grip while the original surface is left
  * untouched. Heal-guarded; returns null if cancelled between stages.
  */
 export async function blockoutMesh(
   scan: MeshData, axis: Vec3, retentionMm: number, segments: number, hooks: ManifoldHooks = {},
 ): Promise<MeshData | null> {
   const wasm = await getManifold()
+  const a = unit(axis)
+  const { lo } = axialRange(scan.positions, a) // the scan's own axial minimum
   if (await checkpoint(hooks, 0.1, 'Healing scan')) return null
   const scanMan = toManifold(wasm, scan)
-  const box = sweepBox(wasm, scan, axis)
+  const box = sweepBox(wasm, scan, a)
+  let sweptRaw: Manifold | null = null
   let swept: Manifold | null = null
   let fillOnly: Manifold | null = null
   let ball: Manifold | null = null
@@ -130,7 +135,9 @@ export async function blockoutMesh(
   let result: Manifold | null = null
   try {
     if (await checkpoint(hooks, 0.4, 'Sweeping undercuts')) return null
-    swept = scanMan.minkowskiSum(box)
+    sweptRaw = scanMan.minkowskiSum(box)
+    // keep only the part at/above the scan's axial minimum — drop the downward skirt
+    swept = sweptRaw.trimByPlane(a, lo)
     if (retentionMm > 0) {
       if (await checkpoint(hooks, 0.6, 'Applying retention')) return null
       fillOnly = swept.subtract(scanMan) // just the material the sweep adds
@@ -146,6 +153,7 @@ export async function blockoutMesh(
   } finally {
     scanMan.delete()
     box.delete()
+    sweptRaw?.delete()
     swept?.delete()
     fillOnly?.delete()
     ball?.delete()
@@ -157,31 +165,45 @@ export async function blockoutMesh(
 /** Frac of the axial extent used for the needle box's lateral thickness (tiny — a near-segment). */
 const SWEEP_THICKNESS_FRAC = 1e-3
 
-/**
- * A thin needle box spanning the origin to −extent·axis: minkowski-summing it
- * with the scan sweeps the solid that far down the insertion axis. Built from a
- * centred cube, shifted to local z ∈ [−L, 0], then oriented so local +z = axis.
- */
-function sweepBox(wasm: ManifoldToplevel, scan: MeshData, axis: Vec3): Manifold {
-  const [ax, ay, az] = unit(axis)
+/** Min/max of the scan's vertices projected onto a (unit) axis. */
+function axialRange(positions: Float32Array, axis: Vec3): { lo: number; hi: number } {
   let lo = Infinity, hi = -Infinity
-  const p = scan.positions
-  for (let i = 0; i < p.length; i += 3) {
-    const d = p[i] * ax + p[i + 1] * ay + p[i + 2] * az
+  for (let i = 0; i < positions.length; i += 3) {
+    const d = positions[i] * axis[0] + positions[i + 1] * axis[1] + positions[i + 2] * axis[2]
     if (d < lo) lo = d
     if (d > hi) hi = d
   }
+  return { lo: Number.isFinite(lo) ? lo : 0, hi: Number.isFinite(hi) ? hi : 0 }
+}
+
+/**
+ * A thin needle box spanning the origin to −extent·`axis` (a unit vector):
+ * minkowski-summing it with the scan sweeps the solid that far down the insertion
+ * axis. Built from a centred cube, shifted to local z ∈ [−L, 0], then oriented so
+ * local +z = axis. translate/transform each return a *new* Manifold, so the
+ * intermediates are deleted explicitly (WASM has no GC).
+ */
+function sweepBox(wasm: ManifoldToplevel, scan: MeshData, axis: Vec3): Manifold {
+  const { lo, hi } = axialRange(scan.positions, axis)
   const L = Math.max(hi - lo, 1e-3)
   const thick = Math.max(L * SWEEP_THICKNESS_FRAC, 1e-4)
-  const [u, v] = basis([ax, ay, az])
+  const [u, v] = basis(axis)
   // column-major Mat4 (last row ignored): local +x→u, +y→v, +z→axis, no translation
   const m: Mat4 = [
     u[0], u[1], u[2], 0,
     v[0], v[1], v[2], 0,
-    ax, ay, az, 0,
+    axis[0], axis[1], axis[2], 0,
     0, 0, 0, 1,
   ]
-  return wasm.Manifold.cube([thick, thick, L], true).translate(0, 0, -L / 2).transform(m)
+  const cube = wasm.Manifold.cube([thick, thick, L], true)
+  let shifted: Manifold | null = null
+  try {
+    shifted = cube.translate(0, 0, -L / 2)
+    return shifted.transform(m)
+  } finally {
+    cube.delete()
+    shifted?.delete()
+  }
 }
 
 function unit(v: Vec3): Vec3 {

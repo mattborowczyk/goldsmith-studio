@@ -121,6 +121,8 @@ export function initEngine(container: HTMLElement): SceneManager {
     }
     // and for the undercut survey (its scan part removed/replaced → drop the gizmo too)
     if (s.fit.surveyEnabled && !engine!.hasUndercutSurvey()) {
+      // a drag-scheduled recompute must not fire against the now-gone scan
+      if (surveyDebounce) { clearTimeout(surveyDebounce); surveyDebounce = null }
       engine!.hideInsertionAxis()
       s.patchFit({ surveyEnabled: false, undercutArea: null, surveyPartId: null })
     }
@@ -1114,6 +1116,14 @@ async function runSurvey(quiet = false): Promise<void> {
       return
     }
     const painted = getEngine().setUndercutSurvey(scan.id, field.values)
+    if (painted) {
+      // the survey replaced any heatmap/clearance overlay in the engine — keep the store in sync
+      const st = useAppStore.getState()
+      if (st.measure.heatmap.enabled) {
+        st.patchHeatmap({ enabled: false, busy: false, progress: 0, range: null, partId: null, error: null })
+      }
+      if (st.fit.mapEnabled) st.patchFit({ mapEnabled: false, mapRange: null, mapPartId: null })
+    }
     useAppStore.getState().patchFit({
       busy: false, progress: 1, stage: null,
       surveyEnabled: painted,
@@ -1179,7 +1189,8 @@ function setInsertionAxisFromGizmo(axis: Vec3): void {
 
 /** Re-aim the insertion axis from the panel (reset / world snap), then resurvey. */
 export function setInsertionAxis(axis: Vec3): void {
-  const len = Math.hypot(axis[0], axis[1], axis[2]) || 1
+  const len = Math.hypot(axis[0], axis[1], axis[2])
+  if (!(len > 1e-9)) return // reject a degenerate (zero-length) axis
   const norm: Vec3 = [axis[0] / len, axis[1] / len, axis[2] / len]
   useAppStore.getState().patchFit({ insertionAxis: norm })
   engine?.setInsertionAxisDirection(norm)
@@ -1213,6 +1224,7 @@ export async function findBestFitAxis(): Promise<void> {
       return
     }
     useAppStore.getState().patchFit({ insertionAxis: result.axis, busy: false, progress: 1, stage: null })
+    showAxisGizmo(scan.mesh) // ensure the gizmo is shown/repositioned before the survey turns on
     engine?.setInsertionAxisDirection(result.axis)
     void runSurvey(false)
   } catch (err) {
@@ -1222,10 +1234,13 @@ export async function findBestFitAxis(): Promise<void> {
   }
 }
 
+/** Max retention allowance (mm) — beyond this a snap-fit gets hard to seat by hand. */
+const MAX_RETENTION_MM = 0.05
+
 /** Retention allowance (mm) for blockout — leaves a snap-fit undercut lip. */
 export function setRetention(mm: number): void {
   if (!Number.isFinite(mm)) return
-  useAppStore.getState().patchFit({ retentionMm: mm })
+  useAppStore.getState().patchFit({ retentionMm: Math.min(Math.max(mm, 0), MAX_RETENTION_MM) })
 }
 
 /**
@@ -1252,8 +1267,9 @@ export async function runBlockout(): Promise<void> {
       return
     }
     const suffix = retentionMm > 0 ? ` (retain ${retentionMm.toFixed(3)})` : ''
-    addGeneratedPart(`${partName(scan.id)} blockout${suffix}`, mesh, { material: null, flatShading: false })
-    useAppStore.getState().patchFit({ busy: false, progress: 1, stage: null, scanPartId: scan.id })
+    // the draftable blockout is selected and becomes the active scan for follow-up fit actions
+    const newId = addGeneratedPart(`${partName(scan.id)} blockout${suffix}`, mesh, { material: null, flatShading: false })
+    useAppStore.getState().patchFit({ busy: false, progress: 1, stage: null, scanPartId: newId })
   } catch (err) {
     if (fitJob !== job) return
     fitJob = null

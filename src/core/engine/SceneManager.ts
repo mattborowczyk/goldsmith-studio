@@ -1534,7 +1534,7 @@ export class SceneManager {
     const outH = Math.round((width * h) / w)
 
     const hidden: THREE.Object3D[] = [
-      this.grid, this.gizmoHelper, this.highlightGroup, this.resizeGroup,
+      this.grid, this.gizmoHelper, this.highlightGroup, this.resizeGroup, this.axisGroup,
     ]
     if (this.sectionHelper) hidden.push(this.sectionHelper)
     const prevVisible = hidden.map((o) => o.visible)
