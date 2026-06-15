@@ -31,6 +31,7 @@ import type {
 import { anglePointOnRing, pointAngleDeg } from '../geometry/resize'
 import { thicknessColor } from '../geometry/thickness'
 import { clearanceColor } from '../geometry/fit'
+import { undercutColor } from '../geometry/undercut'
 import type { NamedMesh } from '../io/exporters'
 import { createBackMaterial, createMaterial } from './materials'
 import { createBackgroundTexture, createStudioEnvironment } from './environment'
@@ -69,6 +70,23 @@ interface ClearanceState {
   hi: number
 }
 
+/** Active undercut survey: per source-vertex undercut value (0 clear, >0 undercut). */
+interface SurveyState {
+  id: string
+  values: Float32Array
+}
+
+/** The draggable insertion-axis arrow overlay (plan §3.2). */
+interface AxisGizmo {
+  group: THREE.Group
+  /** Grabbable sphere at the arrow tip. */
+  handle: THREE.Mesh
+  /** Arrow length in world units (tip distance from the origin). */
+  length: number
+  /** World-space origin the arrow pivots about (the scan centroid). */
+  center: THREE.Vector3
+}
+
 export interface SceneManagerEvents {
   /** Parts added/removed/renamed/transformed — UI + autosave listen to this. */
   partsChanged: () => void
@@ -78,6 +96,8 @@ export interface SceneManagerEvents {
   pointPicked: (point: Vec3) => void
   /** A resizer sector handle was dragged to a new protected-zone width (deg). */
   resizeHandleDrag: (protectedDeg: number) => void
+  /** The insertion-axis arrow gizmo was dragged to a new (normalised) direction. */
+  insertionAxisChanged: (axis: Vec3) => void
 }
 
 /** One rendered dimension: line + endpoint markers + screen-sized label. */
@@ -118,6 +138,7 @@ export class SceneManager {
   private displayMode: DisplayMode = 'gold'
   private heatmap: HeatmapState | null = null
   private clearance: ClearanceState | null = null
+  private survey: SurveyState | null = null
   private parts = new Map<string, ScenePart>()
   private partOrder: string[] = []
   private selectedId: string | null = null
@@ -134,6 +155,9 @@ export class SceneManager {
   /** Draggable sector-edge handles; index 0/1 stored in userData.handleIndex. */
   private resizeHandles: THREE.Mesh[] = []
   private draggingHandle: number | null = null
+  private axisGroup = new THREE.Group()
+  private axisGizmo: AxisGizmo | null = null
+  private draggingAxis = false
   private sectionHelper: THREE.Object3D | null = null
   private backgroundTexture: THREE.Texture | null = null
   private listeners: { [K in keyof SceneManagerEvents]: Set<SceneManagerEvents[K]> } = {
@@ -141,6 +165,7 @@ export class SceneManager {
     selectionChanged: new Set(),
     pointPicked: new Set(),
     resizeHandleDrag: new Set(),
+    insertionAxisChanged: new Set(),
   }
   private tween: {
     fromPos: THREE.Vector3
@@ -191,8 +216,11 @@ export class SceneManager {
     this.gizmo = new TransformControls(this.perspCamera, this.renderer.domElement)
     this.gizmo.setSize(0.9)
     this.gizmo.addEventListener('dragging-changed', (e) => {
-      this.controls.enabled = !(e as unknown as { value: boolean }).value
-      if (!(e as unknown as { value: boolean }).value) this.emit('partsChanged')
+      const dragging = (e as unknown as { value: boolean }).value
+      this.controls.enabled = !dragging
+      // hide the insertion-axis arrow while transforming a part, to avoid handle conflicts
+      this.axisGroup.visible = !dragging && this.axisGizmo !== null
+      if (!dragging) this.emit('partsChanged')
     })
     this.gizmoHelper = this.gizmo.getHelper()
     this.scene.add(this.gizmoHelper)
@@ -202,6 +230,7 @@ export class SceneManager {
     this.scene.add(this.highlightGroup)
     this.scene.add(this.measureGroup)
     this.scene.add(this.resizeGroup)
+    this.scene.add(this.axisGroup)
     this.renderer.localClippingEnabled = true
 
     // Key light exists mostly to cast the soft ground shadow; the softbox
@@ -231,10 +260,10 @@ export class SceneManager {
     this.resizeObserver = new ResizeObserver(() => this.handleResize())
     this.resizeObserver.observe(container)
 
-    // resizer sector-handle drag takes priority over tap-select / orbit
+    // resizer / insertion-axis handle drag takes priority over tap-select / orbit
     this.renderer.domElement.addEventListener('pointerdown', (e) => {
       this.downPos.set(e.clientX, e.clientY)
-      if (this.tryGrabHandle(e)) {
+      if (this.tryGrabHandle(e) || this.tryGrabAxisHandle(e)) {
         this.controls.enabled = false
         try {
           this.renderer.domElement.setPointerCapture(e.pointerId)
@@ -245,13 +274,19 @@ export class SceneManager {
     })
     this.renderer.domElement.addEventListener('pointermove', (e) => {
       if (this.draggingHandle !== null) this.updateHandleDrag(e)
+      else if (this.draggingAxis) this.updateAxisDrag(e)
     })
     this.renderer.domElement.addEventListener('pointercancel', (e) => {
       this.endHandleDrag(e.pointerId)
+      this.endAxisDrag(e.pointerId)
     })
     this.renderer.domElement.addEventListener('pointerup', (e) => {
       if (this.draggingHandle !== null) {
         this.endHandleDrag(e.pointerId)
+        return
+      }
+      if (this.draggingAxis) {
+        this.endAxisDrag(e.pointerId)
         return
       }
       const dx = e.clientX - this.downPos.x
@@ -394,6 +429,7 @@ export class SceneManager {
   private applyPartMaterial(part: ScenePart) {
     if (this.heatmap?.id === part.id) return // heatmap owns this part's material
     if (this.clearance?.id === part.id) return // clearance map owns this part's material
+    if (this.survey?.id === part.id) return // undercut survey owns this part's material
     if (this.showsVertexColors(part)) {
       this.applyColorAttribute(part, part.vertexColors!)
       part.mesh.material = this.getVertexColorMaterial(part.flatShading)
@@ -461,6 +497,7 @@ export class SceneManager {
     if (!part) return
     if (this.heatmap?.id === id) this.heatmap = null
     if (this.clearance?.id === id) this.clearance = null
+    if (this.survey?.id === id) this.survey = null
     if (this.selectedId === id) this.select(null)
     this.scene.remove(part.mesh)
     part.displayGeometry.dispose()
@@ -770,6 +807,11 @@ export class SceneManager {
     // resizer handles + before/after labels keep a constant screen size too
     for (const handle of this.resizeHandles) {
       handle.scale.setScalar(this.worldPerPixel(handle.position) * 14)
+    }
+    // the insertion-axis arrowhead grab handle keeps a constant screen size
+    if (this.axisGizmo && this.axisGroup.visible) {
+      const at = this.axisGizmo.handle.getWorldPosition(new THREE.Vector3())
+      this.axisGizmo.handle.scale.setScalar(this.worldPerPixel(at) * 11)
     }
     for (const child of this.resizeGroup.children) {
       const aspect = child.userData.labelAspect as number | undefined
@@ -1143,7 +1185,9 @@ export class SceneManager {
   ) {
     const part = this.parts.get(id)
     if (!part) return
-    this.clearClearanceMap() // heatmap + clearance map are mutually exclusive overlays
+    // the thickness heatmap, clearance map and undercut survey are mutually exclusive overlays
+    this.clearClearanceMap()
+    this.clearUndercutSurvey()
     if (this.heatmap && this.heatmap.id !== id) this.clearThicknessHeatmap()
     this.heatmap = { id, values, min: range.min, max: range.max, threshold }
     this.paintHeatmap(part)
@@ -1196,6 +1240,7 @@ export class SceneManager {
     const part = this.parts.get(id)
     if (!part) return false
     this.clearThicknessHeatmap()
+    this.clearUndercutSurvey()
     if (this.clearance && this.clearance.id !== id) this.clearClearanceMap()
     this.clearance = { id, values, lo: band.lo, hi: band.hi }
     this.paintClearance(part)
@@ -1235,6 +1280,160 @@ export class SceneManager {
 
   hasClearanceMap(): boolean {
     return this.clearance !== null
+  }
+
+  // ---------- grillz undercut survey (plan §3.2) ----------
+
+  /**
+   * Paint a per-source-vertex undercut field onto the tooth scan: neutral where
+   * the surface draws cleanly along the insertion axis, amber → red on undercut
+   * regions by depth (the classic survey view). Transient overlay, mutually
+   * exclusive with the heatmap + clearance map. Returns true when it painted.
+   */
+  setUndercutSurvey(id: string, values: Float32Array): boolean {
+    const part = this.parts.get(id)
+    if (!part) return false
+    this.clearThicknessHeatmap()
+    this.clearClearanceMap()
+    if (this.survey && this.survey.id !== id) this.clearUndercutSurvey()
+    this.survey = { id, values }
+    this.paintSurvey(part)
+    return true
+  }
+
+  private paintSurvey(part: ScenePart) {
+    const s = this.survey!
+    const srcColors = new Float32Array(part.data.positions.length)
+    for (let v = 0; v < s.values.length; v++) {
+      const [r, g, b] = undercutColor(s.values[v])
+      srcColors[v * 3] = r
+      srcColors[v * 3 + 1] = g
+      srcColors[v * 3 + 2] = b
+    }
+    this.applyColorAttribute(part, srcColors)
+    part.mesh.material = this.getVertexColorMaterial(part.flatShading)
+    part.backMesh.visible = false
+  }
+
+  clearUndercutSurvey() {
+    const s = this.survey
+    if (!s) return
+    this.survey = null
+    const part = this.parts.get(s.id)
+    if (part) this.applyPartMaterial(part) // restores preset / imported colours
+  }
+
+  hasUndercutSurvey(): boolean {
+    return this.survey !== null
+  }
+
+  // ---------- insertion-axis gizmo (plan §3.2) ----------
+
+  /**
+   * Show (or re-target) the draggable insertion-axis arrow at `center`, pointing
+   * along `axis`, with the shaft `length` world units long. Rebuilt when the
+   * length changes; otherwise just re-oriented. Dragging the arrowhead emits
+   * `insertionAxisChanged`.
+   */
+  showInsertionAxis(center: Vec3, length: number, axis: Vec3) {
+    const c = new THREE.Vector3(center[0], center[1], center[2])
+    if (!this.axisGizmo || Math.abs(this.axisGizmo.length - length) > length * 0.01) {
+      this.buildAxisGizmo(length)
+    }
+    this.axisGizmo!.center.copy(c)
+    this.axisGroup.position.copy(c)
+    this.axisGroup.visible = true
+    this.setInsertionAxisDirection(axis)
+  }
+
+  /** Re-orient the arrow without rebuilding it (e.g. after a best-axis search). */
+  setInsertionAxisDirection(axis: Vec3) {
+    if (!this.axisGizmo) return
+    const dir = new THREE.Vector3(axis[0], axis[1], axis[2])
+    if (dir.lengthSq() === 0) return
+    dir.normalize()
+    this.axisGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+  }
+
+  hideInsertionAxis() {
+    this.endAxisDrag()
+    for (const child of [...this.axisGroup.children]) {
+      this.axisGroup.remove(child)
+      const obj = child as THREE.Mesh
+      obj.geometry?.dispose()
+      ;(obj.material as THREE.Material | undefined)?.dispose?.()
+    }
+    this.axisGizmo = null
+    this.axisGroup.visible = false
+  }
+
+  /** Build the arrow (shaft + head + grab handle) along local +Y, length `len`. */
+  private buildAxisGizmo(len: number) {
+    this.hideInsertionAxis()
+    const shaftR = len * 0.02
+    const headLen = len * 0.16
+    const headR = len * 0.06
+    const accent = 0x6cc0ff
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(shaftR, shaftR, len - headLen, 12),
+      new THREE.MeshBasicMaterial({ color: accent, depthTest: false, transparent: true, opacity: 0.9 }),
+    )
+    shaft.position.y = (len - headLen) / 2
+    shaft.renderOrder = 998
+    const head = new THREE.Mesh(
+      new THREE.ConeGeometry(headR, headLen, 16),
+      new THREE.MeshBasicMaterial({ color: accent, depthTest: false, transparent: true, opacity: 0.9 }),
+    )
+    head.position.y = len - headLen / 2
+    head.renderOrder = 998
+    const handle = new THREE.Mesh(
+      new THREE.SphereGeometry(0.5, 14, 10),
+      new THREE.MeshBasicMaterial({ color: 0xf2efe9, depthTest: false, transparent: true }),
+    )
+    handle.position.y = len
+    handle.renderOrder = 999
+    this.axisGroup.add(shaft, head, handle)
+    this.axisGizmo = { group: this.axisGroup, handle, length: len, center: new THREE.Vector3() }
+  }
+
+  /** Did pointer-down land on the axis arrowhead? Arms the arcball drag if so. */
+  private tryGrabAxisHandle(e: PointerEvent): boolean {
+    if (!this.axisGizmo || !this.axisGroup.visible) return false
+    this.raycaster.setFromCamera(this.ndcOf(e), this.activeCamera)
+    if (!this.raycaster.intersectObject(this.axisGizmo.handle, false).length) return false
+    this.draggingAxis = true
+    return true
+  }
+
+  /** Arcball: intersect the pointer ray with a sphere about the gizmo origin → new axis. */
+  private updateAxisDrag(e: PointerEvent) {
+    const g = this.axisGizmo
+    if (!g) return
+    this.raycaster.setFromCamera(this.ndcOf(e), this.activeCamera)
+    const sphere = new THREE.Sphere(g.center, g.length)
+    const hit = new THREE.Vector3()
+    if (!this.raycaster.ray.intersectSphere(sphere, hit)) {
+      // ray misses the sphere — clamp to the nearest point on the ray (the silhouette)
+      this.raycaster.ray.closestPointToPoint(g.center, hit)
+    }
+    const dir = hit.sub(g.center)
+    if (dir.lengthSq() === 0) return
+    dir.normalize()
+    this.axisGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+    this.emit('insertionAxisChanged', [dir.x, dir.y, dir.z])
+  }
+
+  private endAxisDrag(pointerId?: number) {
+    if (!this.draggingAxis) return
+    this.draggingAxis = false
+    this.controls.enabled = true
+    if (pointerId !== undefined) {
+      try {
+        this.renderer.domElement.releasePointerCapture(pointerId)
+      } catch {
+        // capture may never have been acquired
+      }
+    }
   }
 
   // ---------- camera ----------
@@ -1441,6 +1640,7 @@ export class SceneManager {
     this.clearHighlights()
     this.clearMeasurements()
     this.clearResizeOverlay()
+    this.hideInsertionAxis()
     this.setSection(null)
     this.clearParts()
     for (const mat of this.matCache.values()) mat.dispose()

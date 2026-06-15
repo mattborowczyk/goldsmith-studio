@@ -3,6 +3,7 @@ import { importFile, scaleMeshData } from '@/core/io/importers'
 import { repairClient } from '@/core/geometry/repairClient'
 import { thicknessClient, type ThicknessJob } from '@/core/geometry/thicknessClient'
 import { fitClient, type FitJob } from '@/core/geometry/fitClient'
+import { defaultInsertionAxis } from '@/core/geometry/undercut'
 import {
   addHistoryEntries,
   clearHistoryStore,
@@ -84,8 +85,10 @@ let pickConsumer: 'measure' | 'resize' | null = null
 const revisions = new Map<string, { data: MeshData; matrix: number[] }[]>()
 /** In-flight wall-thickness compute, so the UI can cancel it. */
 let thicknessJob: ThicknessJob | null = null
-/** In-flight grillz fit op (offset / subtract / clearance map). */
+/** In-flight grillz fit op (offset / subtract / clearance map / survey / blockout). */
 let fitJob: FitJob<unknown> | null = null
+/** Debounce timer coalescing survey recomputes during an axis-gizmo drag. */
+let surveyDebounce: ReturnType<typeof setTimeout> | null = null
 /** Facet count of the Minkowski offset ball — coarse: a thin uniform gap needs no smooth sphere. */
 const FIT_SPHERE_SEGMENTS = 16
 
@@ -116,6 +119,11 @@ export function initEngine(container: HTMLElement): SceneManager {
     if (s.fit.mapEnabled && !engine!.hasClearanceMap()) {
       s.patchFit({ mapEnabled: false, mapRange: null, mapPartId: null })
     }
+    // and for the undercut survey (its scan part removed/replaced → drop the gizmo too)
+    if (s.fit.surveyEnabled && !engine!.hasUndercutSurvey()) {
+      engine!.hideInsertionAxis()
+      s.patchFit({ surveyEnabled: false, undercutArea: null, surveyPartId: null })
+    }
     scheduleAutosave()
     if (s.tab === 'cost') scheduleVolumeRecompute()
   })
@@ -125,6 +133,7 @@ export function initEngine(container: HTMLElement): SceneManager {
   })
   engine.on('pointPicked', handlePointPicked)
   engine.on('resizeHandleDrag', (protectedDeg) => setResizeProtectedWidth(protectedDeg))
+  engine.on('insertionAxisChanged', (axis) => setInsertionAxisFromGizmo(axis))
 
   void restoreSession()
   void initCostData()
@@ -1034,11 +1043,221 @@ export function clearFitMap() {
 
 /** Tear the fit overlay + any in-flight job down when leaving the Fit tab. */
 export function teardownFit() {
-  if (fitJob || useAppStore.getState().fit.mapEnabled) {
+  const f = useAppStore.getState().fit
+  if (fitJob || f.mapEnabled || f.surveyEnabled) {
+    if (surveyDebounce) { clearTimeout(surveyDebounce); surveyDebounce = null }
     fitJob?.cancel()
     fitJob = null
     clearFitMap()
-    useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+    engine?.clearUndercutSurvey()
+    engine?.hideInsertionAxis()
+    useAppStore.getState().patchFit({
+      busy: false, progress: 0, stage: null,
+      surveyEnabled: false, undercutArea: null, surveyPartId: null,
+    })
+  }
+}
+
+// ---------- grillz undercut survey & blockout (plan §3.2) ----------
+
+/** Bounding centre + radius of a world mesh, for placing the axis gizmo. */
+function meshBounds(positions: Float32Array): { center: Vec3; radius: number } {
+  let minX = Infinity, minY = Infinity, minZ = Infinity
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
+  for (let i = 0; i < positions.length; i += 3) {
+    if (positions[i] < minX) minX = positions[i]
+    if (positions[i + 1] < minY) minY = positions[i + 1]
+    if (positions[i + 2] < minZ) minZ = positions[i + 2]
+    if (positions[i] > maxX) maxX = positions[i]
+    if (positions[i + 1] > maxY) maxY = positions[i + 1]
+    if (positions[i + 2] > maxZ) maxZ = positions[i + 2]
+  }
+  const center: Vec3 = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2]
+  const radius = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2 || 1
+  return { center, radius }
+}
+
+/** Resolve the tooth scan to survey + its world mesh, or set an error. */
+function surveyScan(): { id: string; mesh: MeshData } | null {
+  const id = fitScanId()
+  if (!id) {
+    useAppStore.getState().patchFit({ error: 'Select the tooth scan first.' })
+    return null
+  }
+  const mesh = getEngine().getWorldMeshData(id)
+  return mesh ? { id, mesh } : null
+}
+
+/**
+ * Run the undercut survey for the current insertion axis and paint it. `quiet`
+ * skips the busy/progress UI for the rapid recomputes during an axis drag; the
+ * in-flight job is always superseded so only the latest axis wins.
+ */
+async function runSurvey(quiet = false): Promise<void> {
+  const scan = surveyScan()
+  if (!scan) return
+  const axis = useAppStore.getState().fit.insertionAxis
+  fitJob?.cancel()
+  if (!quiet) {
+    useAppStore.getState().patchFit({ busy: true, progress: 0, stage: 'Surveying undercuts', error: null })
+  }
+  const job = fitClient.survey(scan.mesh, axis, (p, stage) => {
+    if (!quiet) useAppStore.getState().patchFit({ progress: p, stage })
+  })
+  fitJob = job
+  try {
+    const field = await job.promise
+    if (fitJob !== job) return // superseded / cancelled
+    fitJob = null
+    if (!field) {
+      if (!quiet) useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+      return
+    }
+    const painted = getEngine().setUndercutSurvey(scan.id, field.values)
+    useAppStore.getState().patchFit({
+      busy: false, progress: 1, stage: null,
+      surveyEnabled: painted,
+      undercutArea: painted ? field.area : null,
+      surveyPartId: painted ? scan.id : null,
+      scanPartId: scan.id,
+    })
+  } catch (err) {
+    if (fitJob !== job) return
+    fitJob = null
+    useAppStore.getState().patchFit({ busy: false, stage: null, error: fitErrorMessage(err) })
+  }
+}
+
+/** Coalesce the rapid axis-drag recomputes into one quiet survey on settle. */
+function debounceSurvey() {
+  if (surveyDebounce) clearTimeout(surveyDebounce)
+  surveyDebounce = setTimeout(() => {
+    surveyDebounce = null
+    void runSurvey(true)
+  }, 50)
+}
+
+/** Place the axis gizmo on the scan, sized to the scan and aimed at the current axis. */
+function showAxisGizmo(scanMesh: MeshData) {
+  const { center, radius } = meshBounds(scanMesh.positions)
+  getEngine().showInsertionAxis(center, radius, useAppStore.getState().fit.insertionAxis)
+}
+
+/** Enable the undercut survey: default the axis, show the gizmo, run the survey. */
+export function enableSurvey(): void {
+  const scan = surveyScan()
+  if (!scan) return
+  const axis = defaultInsertionAxis(scan.mesh)
+  useAppStore.getState().patchFit({ insertionAxis: axis, error: null })
+  showAxisGizmo(scan.mesh)
+  void runSurvey(false)
+}
+
+/** Remove the survey overlay + axis gizmo, cancelling any in-flight job. */
+export function clearSurvey(): void {
+  if (surveyDebounce) { clearTimeout(surveyDebounce); surveyDebounce = null }
+  fitJob?.cancel()
+  fitJob = null
+  engine?.clearUndercutSurvey()
+  engine?.hideInsertionAxis()
+  useAppStore.getState().patchFit({
+    surveyEnabled: false, undercutArea: null, surveyPartId: null, busy: false, progress: 0, stage: null,
+  })
+}
+
+/** The survey toggle (panel button): on ↔ off. */
+export function toggleSurvey(): void {
+  if (useAppStore.getState().fit.surveyEnabled) clearSurvey()
+  else enableSurvey()
+}
+
+/** Gizmo-drag callback: store the axis (live readout) + debounce a quiet recompute. */
+function setInsertionAxisFromGizmo(axis: Vec3): void {
+  useAppStore.getState().patchFit({ insertionAxis: axis })
+  if (useAppStore.getState().fit.surveyEnabled) debounceSurvey()
+}
+
+/** Re-aim the insertion axis from the panel (reset / world snap), then resurvey. */
+export function setInsertionAxis(axis: Vec3): void {
+  const len = Math.hypot(axis[0], axis[1], axis[2]) || 1
+  const norm: Vec3 = [axis[0] / len, axis[1] / len, axis[2] / len]
+  useAppStore.getState().patchFit({ insertionAxis: norm })
+  engine?.setInsertionAxisDirection(norm)
+  if (useAppStore.getState().fit.surveyEnabled) debounceSurvey()
+}
+
+/** Reset the insertion axis to the scan's averaged outward normal. */
+export function resetInsertionAxis(): void {
+  const scan = surveyScan()
+  if (!scan) return
+  setInsertionAxis(defaultInsertionAxis(scan.mesh))
+}
+
+/** Search for the insertion axis minimising undercut area, then resurvey. */
+export async function findBestFitAxis(): Promise<void> {
+  const scan = surveyScan()
+  if (!scan) return
+  const seed = useAppStore.getState().fit.insertionAxis
+  fitJob?.cancel()
+  useAppStore.getState().patchFit({ busy: true, progress: 0, stage: 'Searching axes', error: null })
+  const job = fitClient.bestAxis(scan.mesh, seed, (p, stage) =>
+    useAppStore.getState().patchFit({ progress: p, stage }),
+  )
+  fitJob = job
+  try {
+    const result = await job.promise
+    if (fitJob !== job) return
+    fitJob = null
+    if (!result) {
+      useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+      return
+    }
+    useAppStore.getState().patchFit({ insertionAxis: result.axis, busy: false, progress: 1, stage: null })
+    engine?.setInsertionAxisDirection(result.axis)
+    void runSurvey(false)
+  } catch (err) {
+    if (fitJob !== job) return
+    fitJob = null
+    useAppStore.getState().patchFit({ busy: false, stage: null, error: fitErrorMessage(err) })
+  }
+}
+
+/** Retention allowance (mm) for blockout — leaves a snap-fit undercut lip. */
+export function setRetention(mm: number): void {
+  if (!Number.isFinite(mm)) return
+  useAppStore.getState().patchFit({ retentionMm: mm })
+}
+
+/**
+ * Auto-blockout: fill the scan's undercuts along the insertion axis → a new,
+ * draftable scan part that seats cleanly along that path (retention lip optional).
+ * Reads only the axis + retention, leaving the original scan and its survey intact.
+ */
+export async function runBlockout(): Promise<void> {
+  const scan = surveyScan()
+  if (!scan) return
+  const { insertionAxis: axis, retentionMm } = useAppStore.getState().fit
+  fitJob?.cancel()
+  useAppStore.getState().patchFit({ busy: true, progress: 0, stage: 'Starting', error: null })
+  const job = fitClient.blockout(scan.mesh, axis, retentionMm, FIT_SPHERE_SEGMENTS, (p, stage) =>
+    useAppStore.getState().patchFit({ progress: p, stage }),
+  )
+  fitJob = job
+  try {
+    const mesh = await job.promise
+    if (fitJob !== job) return
+    fitJob = null
+    if (!mesh) {
+      useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+      return
+    }
+    const suffix = retentionMm > 0 ? ` (retain ${retentionMm.toFixed(3)})` : ''
+    addGeneratedPart(`${partName(scan.id)} blockout${suffix}`, mesh, { material: null, flatShading: false })
+    useAppStore.getState().patchFit({ busy: false, progress: 1, stage: null, scanPartId: scan.id })
+  } catch (err) {
+    if (fitJob !== job) return
+    fitJob = null
+    useAppStore.getState().patchFit({ busy: false, stage: null, error: fitErrorMessage(err) })
   }
 }
 

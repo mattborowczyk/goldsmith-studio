@@ -171,10 +171,56 @@ function prismSolid({ x0, x1, y0, y1, nx, ny }, zBottom, zTop) {
 const toothArch = prismSolid(ARCH, () => 0, (x) => archTop(x))
 writeBinarySTL(toothArch, join(outDir, 'tooth-arch.stl'))
 
+// ---------- undercut stud (binary STL) ----------
+//
+//  - public/test/undercut-stud.stl  an open-bottomed "tooth bump": a sphere
+//    bulging past a narrower neck. Along +Z the sub-equator band overhangs the
+//    neck (a clear undercut to colour red); "Find best axis" returns ≈+Z, and
+//    blockout fills the overhang to a clean draftable seat.
+
+function bulgedStud({ R = 5, rNeck = 2.5, neckH = 2, seg = 64, rings = 28 } = {}) {
+  const zc = neckH + Math.sqrt(Math.max(R * R - rNeck * rNeck, 0))
+  const betaJoin = Math.acos((neckH - zc) / R)
+  const profile = [[rNeck, 0]]
+  for (let i = 0; i <= rings; i++) {
+    const beta = betaJoin * (1 - i / rings)
+    profile.push([R * Math.sin(beta), zc + R * Math.cos(beta)])
+  }
+  const apex = [0, 0, profile[profile.length - 1][1]]
+  profile.pop()
+  const P = (i, j) => {
+    const [r, z] = profile[i]
+    const a = (2 * Math.PI * (j % seg)) / seg
+    return [r * Math.cos(a), r * Math.sin(a), z]
+  }
+  const tris = []
+  const push = (a, b, c, rx, ry, rz) => {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2]
+    const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2]
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
+    if (nx * rx + ny * ry + nz * rz < 0) tris.push([a, c, b])
+    else tris.push([a, b, c])
+  }
+  for (let i = 0; i < profile.length - 1; i++) {
+    for (let j = 0; j < seg; j++) {
+      const mc = Math.cos((2 * Math.PI * (j + 0.5)) / seg)
+      const ms = Math.sin((2 * Math.PI * (j + 0.5)) / seg)
+      push(P(i, j), P(i, j + 1), P(i + 1, j + 1), mc, ms, 0)
+      push(P(i, j), P(i + 1, j + 1), P(i + 1, j), mc, ms, 0)
+    }
+  }
+  const top = profile.length - 1
+  for (let j = 0; j < seg; j++) push(P(top, j), P(top, j + 1), apex, 0, 0, 1)
+  return tris
+}
+writeBinarySTL(bulgedStud(), join(outDir, 'undercut-stud.stl'))
+
 const CAP_GAP = 0.02 // the cap starts a hair off the teeth
 const CAP_THK = 1.0
 const capInner = (x) => archTop(x) + CAP_GAP
 const grillzCap = prismSolid(ARCH, capInner, (x) => capInner(x) + CAP_THK)
 writeBinarySTL(grillzCap, join(outDir, 'grillz-cap.stl'))
 
-console.log('Wrote tapered-tube.stl + colored-cube.ply + tooth-arch.stl + grillz-cap.stl to public/test/')
+console.log(
+  'Wrote tapered-tube.stl + colored-cube.ply + tooth-arch.stl + grillz-cap.stl + undercut-stud.stl to public/test/',
+)

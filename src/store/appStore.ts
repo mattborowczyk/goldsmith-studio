@@ -144,6 +144,17 @@ export interface FitState {
   mapRange: { min: number; max: number } | null
   /** Part the clearance map is painted on. */
   mapPartId: string | null
+  // ----- undercut survey & blockout (plan §3.2) -----
+  /** Insertion (path-of-withdrawal) axis, normalised, for the undercut survey. */
+  insertionAxis: Vec3
+  /** The undercut survey overlay is painted right now (and the axis gizmo shown). */
+  surveyEnabled: boolean
+  /** Total undercut surface area of the active survey (mm²), or null. */
+  undercutArea: number | null
+  /** Part the survey is painted on. */
+  surveyPartId: string | null
+  /** Retention allowance for blockout (mm) — leaves a snap-fit undercut lip. */
+  retentionMm: number
   error: string | null
 }
 
@@ -315,6 +326,11 @@ export const useAppStore = create<AppState>((set) => ({
     mapEnabled: false,
     mapRange: null,
     mapPartId: null,
+    insertionAxis: [0, 1, 0],
+    surveyEnabled: false,
+    undercutArea: null,
+    surveyPartId: null,
+    retentionMm: 0,
     error: null,
   },
   deliver: {

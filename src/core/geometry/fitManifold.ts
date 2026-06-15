@@ -1,6 +1,6 @@
 import Module from 'manifold-3d'
-import type { Manifold, ManifoldToplevel } from 'manifold-3d'
-import type { MeshData } from '../types'
+import type { Manifold, ManifoldToplevel, Mat4 } from 'manifold-3d'
+import type { MeshData, Vec3 } from '../types'
 import { fillHoles, fixWinding, removeDegenerateTriangles, weldVertices } from './meshRepair'
 
 /**
@@ -104,6 +104,100 @@ export async function subtractMesh(
     shellMan?.delete()
     result?.delete()
   }
+}
+
+/**
+ * Auto-blockout (plan §3.2): fill the scan's undercuts along the insertion axis
+ * so the result seats cleanly along that path. We sweep the healed scan one full
+ * axial extent down the −axis (minkowskiSum with a thin needle box) — filling
+ * every void directly beneath an overhang, which is the geometric definition of
+ * an undercut — and union the sweep back onto the scan. With `retentionMm > 0`
+ * the *added* fill is eroded by that much (minkowskiDifference), leaving a thin
+ * lip of original undercut for snap-fit grip while the original surface is left
+ * untouched. Heal-guarded; returns null if cancelled between stages.
+ */
+export async function blockoutMesh(
+  scan: MeshData, axis: Vec3, retentionMm: number, segments: number, hooks: ManifoldHooks = {},
+): Promise<MeshData | null> {
+  const wasm = await getManifold()
+  if (await checkpoint(hooks, 0.1, 'Healing scan')) return null
+  const scanMan = toManifold(wasm, scan)
+  const box = sweepBox(wasm, scan, axis)
+  let swept: Manifold | null = null
+  let fillOnly: Manifold | null = null
+  let ball: Manifold | null = null
+  let fillEroded: Manifold | null = null
+  let result: Manifold | null = null
+  try {
+    if (await checkpoint(hooks, 0.4, 'Sweeping undercuts')) return null
+    swept = scanMan.minkowskiSum(box)
+    if (retentionMm > 0) {
+      if (await checkpoint(hooks, 0.6, 'Applying retention')) return null
+      fillOnly = swept.subtract(scanMan) // just the material the sweep adds
+      ball = wasm.Manifold.sphere(retentionMm, segments)
+      fillEroded = fillOnly.minkowskiDifference(ball) // shrink it → leave a retention lip
+      if (await checkpoint(hooks, 0.85, 'Building surface')) return null
+      result = scanMan.add(fillEroded)
+    } else {
+      if (await checkpoint(hooks, 0.85, 'Building surface')) return null
+      result = scanMan.add(swept)
+    }
+    return meshOf(result)
+  } finally {
+    scanMan.delete()
+    box.delete()
+    swept?.delete()
+    fillOnly?.delete()
+    ball?.delete()
+    fillEroded?.delete()
+    result?.delete()
+  }
+}
+
+/** Frac of the axial extent used for the needle box's lateral thickness (tiny — a near-segment). */
+const SWEEP_THICKNESS_FRAC = 1e-3
+
+/**
+ * A thin needle box spanning the origin to −extent·axis: minkowski-summing it
+ * with the scan sweeps the solid that far down the insertion axis. Built from a
+ * centred cube, shifted to local z ∈ [−L, 0], then oriented so local +z = axis.
+ */
+function sweepBox(wasm: ManifoldToplevel, scan: MeshData, axis: Vec3): Manifold {
+  const [ax, ay, az] = unit(axis)
+  let lo = Infinity, hi = -Infinity
+  const p = scan.positions
+  for (let i = 0; i < p.length; i += 3) {
+    const d = p[i] * ax + p[i + 1] * ay + p[i + 2] * az
+    if (d < lo) lo = d
+    if (d > hi) hi = d
+  }
+  const L = Math.max(hi - lo, 1e-3)
+  const thick = Math.max(L * SWEEP_THICKNESS_FRAC, 1e-4)
+  const [u, v] = basis([ax, ay, az])
+  // column-major Mat4 (last row ignored): local +x→u, +y→v, +z→axis, no translation
+  const m: Mat4 = [
+    u[0], u[1], u[2], 0,
+    v[0], v[1], v[2], 0,
+    ax, ay, az, 0,
+    0, 0, 0, 1,
+  ]
+  return wasm.Manifold.cube([thick, thick, L], true).translate(0, 0, -L / 2).transform(m)
+}
+
+function unit(v: Vec3): Vec3 {
+  const len = Math.hypot(v[0], v[1], v[2])
+  return len > 0 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 1, 0]
+}
+
+/** Two unit vectors orthogonal to `axis` (and to each other). */
+function basis(axis: Vec3): [Vec3, Vec3] {
+  const ref: Vec3 = Math.abs(axis[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]
+  let ux = ref[1] * axis[2] - ref[2] * axis[1]
+  let uy = ref[2] * axis[0] - ref[0] * axis[2]
+  let uz = ref[0] * axis[1] - ref[1] * axis[0]
+  const ul = Math.hypot(ux, uy, uz) || 1
+  ux /= ul; uy /= ul; uz /= ul
+  return [[ux, uy, uz], [axis[1] * uz - axis[2] * uy, axis[2] * ux - axis[0] * uz, axis[0] * uy - axis[1] * ux]]
 }
 
 /** MeshData out of a Manifold result (copied off the WASM heap). */

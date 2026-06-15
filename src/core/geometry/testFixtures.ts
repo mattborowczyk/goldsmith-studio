@@ -123,6 +123,76 @@ export function makeTube(opts: {
   return { positions, indices: new Uint32Array(tris) }
 }
 
+/**
+ * Open-bottomed "tooth bump" for the undercut survey/blockout tests: a sphere of
+ * radius `R` bulging past a narrower neck (radius `rNeck`, height `neckH`),
+ * revolved about +Z, with the bottom left open like an intraoral scan's gum
+ * margin. Along +Z the sphere's sub-equator band overhangs the neck — a known
+ * undercut — while the neck wall is vertical (draftable) and the top cap faces
+ * the axis (clear). The averaged outward normal (default insertion axis) is +Z.
+ */
+export function makeBulgedStud(opts: {
+  R?: number
+  rNeck?: number
+  neckH?: number
+  seg?: number
+  rings?: number
+} = {}): MeshData {
+  const R = opts.R ?? 5
+  const rNeck = opts.rNeck ?? 2.5
+  const neckH = opts.neckH ?? 2
+  const seg = opts.seg ?? 48
+  const ringsN = opts.rings ?? 20
+
+  const zc = neckH + Math.sqrt(Math.max(R * R - rNeck * rNeck, 0)) // sphere-centre height
+  const betaJoin = Math.acos((neckH - zc) / R) // polar angle at the neck join (>90°)
+
+  // profile rings bottom→top: [r, z]. First is the open neck-bottom rim.
+  const profile: [number, number][] = [[rNeck, 0]]
+  for (let i = 0; i <= ringsN; i++) {
+    const beta = betaJoin * (1 - i / ringsN) // betaJoin → 0 (pole)
+    profile.push([R * Math.sin(beta), zc + R * Math.cos(beta)])
+  }
+  // the last ring is the pole (r≈0); drop it and fan to a clean apex instead
+  const apexZ = profile[profile.length - 1][1]
+  profile.pop()
+
+  const verts: number[] = []
+  for (const [r, z] of profile) {
+    for (let j = 0; j < seg; j++) {
+      const a = (2 * Math.PI * j) / seg
+      verts.push(r * Math.cos(a), r * Math.sin(a), z)
+    }
+  }
+  const apexIdx = profile.length * seg
+  verts.push(0, 0, apexZ)
+  const positions = new Float32Array(verts)
+
+  const ring = (i: number, j: number) => i * seg + (j % seg)
+  const tris: number[] = []
+  const push = (a: number, b: number, c: number, rx: number, ry: number, rz: number) => {
+    const ax = positions[a * 3], ay = positions[a * 3 + 1], az = positions[a * 3 + 2]
+    const ux = positions[b * 3] - ax, uy = positions[b * 3 + 1] - ay, uz = positions[b * 3 + 2] - az
+    const vx = positions[c * 3] - ax, vy = positions[c * 3 + 1] - ay, vz = positions[c * 3 + 2] - az
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
+    if (nx * rx + ny * ry + nz * rz < 0) tris.push(a, c, b)
+    else tris.push(a, b, c)
+  }
+  for (let i = 0; i < profile.length - 1; i++) {
+    for (let j = 0; j < seg; j++) {
+      const mc = Math.cos((2 * Math.PI * (j + 0.5)) / seg)
+      const ms = Math.sin((2 * Math.PI * (j + 0.5)) / seg)
+      push(ring(i, j), ring(i, j + 1), ring(i + 1, j + 1), mc, ms, 0)
+      push(ring(i, j), ring(i + 1, j + 1), ring(i + 1, j), mc, ms, 0)
+    }
+  }
+  const top = profile.length - 1
+  for (let j = 0; j < seg; j++) {
+    push(ring(top, j), ring(top, j + 1), apexIdx, 0, 0, 1) // top fan, outward +z
+  }
+  return { positions, indices: new Uint32Array(tris) }
+}
+
 /** Flip the winding of every triangle (inside-out cube). */
 export function invert(mesh: MeshData): MeshData {
   const indices = mesh.indices.slice()
