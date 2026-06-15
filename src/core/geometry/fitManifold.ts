@@ -34,8 +34,19 @@ async function getManifold(): Promise<ManifoldToplevel> {
 /** Coarse stage hooks so the worker can stream progress + observe cancel between stages. */
 export interface ManifoldHooks {
   onStage?: (progress: number, stage: string) => void
-  /** Polled between (synchronous) stages; true aborts and resolves null. */
+  /** Polled between stages; true aborts and resolves null. */
   shouldCancel?: () => boolean
+}
+
+/**
+ * Report a stage, then yield a macrotask so a cancel message queued on the worker
+ * (which can't interrupt the synchronous WASM stages) gets a turn to update
+ * shouldCancel. Returns true when the op should abort. Mirrors thickness.ts.
+ */
+async function checkpoint(hooks: ManifoldHooks, progress: number, stage: string): Promise<boolean> {
+  hooks.onStage?.(progress, stage)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  return hooks.shouldCancel?.() ?? false
 }
 
 /**
@@ -47,17 +58,14 @@ export async function offsetMesh(
   scan: MeshData, clearanceMm: number, segments: number, hooks: ManifoldHooks = {},
 ): Promise<MeshData | null> {
   const wasm = await getManifold()
-  hooks.onStage?.(0.15, 'Healing scan')
-  if (hooks.shouldCancel?.()) return null
+  if (await checkpoint(hooks, 0.15, 'Healing scan')) return null
   const scanMan = toManifold(wasm, scan)
   const ball = wasm.Manifold.sphere(clearanceMm, segments)
   let offset: Manifold | null = null
   try {
-    hooks.onStage?.(0.45, 'Offsetting')
-    if (hooks.shouldCancel?.()) return null
+    if (await checkpoint(hooks, 0.45, 'Offsetting')) return null
     offset = scanMan.minkowskiSum(ball)
-    hooks.onStage?.(0.95, 'Building surface')
-    if (hooks.shouldCancel?.()) return null
+    if (await checkpoint(hooks, 0.95, 'Building surface')) return null
     return meshOf(offset)
   } finally {
     scanMan.delete()
@@ -74,25 +82,20 @@ export async function subtractMesh(
   scan: MeshData, shell: MeshData, clearanceMm: number, segments: number, hooks: ManifoldHooks = {},
 ): Promise<MeshData | null> {
   const wasm = await getManifold()
-  hooks.onStage?.(0.1, 'Healing scan')
-  if (hooks.shouldCancel?.()) return null
+  if (await checkpoint(hooks, 0.1, 'Healing scan')) return null
   const scanMan = toManifold(wasm, scan)
   const ball = wasm.Manifold.sphere(clearanceMm, segments)
   let offset: Manifold | null = null
   let shellMan: Manifold | null = null
   let result: Manifold | null = null
   try {
-    hooks.onStage?.(0.35, 'Offsetting')
-    if (hooks.shouldCancel?.()) return null
+    if (await checkpoint(hooks, 0.35, 'Offsetting')) return null
     offset = scanMan.minkowskiSum(ball)
-    hooks.onStage?.(0.55, 'Healing shell')
-    if (hooks.shouldCancel?.()) return null
+    if (await checkpoint(hooks, 0.55, 'Healing shell')) return null
     shellMan = toManifold(wasm, shell)
-    hooks.onStage?.(0.8, 'Subtracting')
-    if (hooks.shouldCancel?.()) return null
+    if (await checkpoint(hooks, 0.8, 'Subtracting')) return null
     result = shellMan.subtract(offset)
-    hooks.onStage?.(0.95, 'Building surface')
-    if (hooks.shouldCancel?.()) return null
+    if (await checkpoint(hooks, 0.95, 'Building surface')) return null
     return meshOf(result)
   } finally {
     scanMan.delete()

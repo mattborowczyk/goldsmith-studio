@@ -1191,13 +1191,15 @@ export class SceneManager {
    * (too loose). Transient overlay, mutually exclusive with the wall-thickness
    * heatmap. Dragging the band goes through setClearanceBand, which only recolours.
    */
-  setClearanceMap(id: string, values: Float32Array, band: { lo: number; hi: number }) {
+  /** Returns true when the map was painted; false if the target part is gone. */
+  setClearanceMap(id: string, values: Float32Array, band: { lo: number; hi: number }): boolean {
     const part = this.parts.get(id)
-    if (!part) return
+    if (!part) return false
     this.clearThicknessHeatmap()
     if (this.clearance && this.clearance.id !== id) this.clearClearanceMap()
     this.clearance = { id, values, lo: band.lo, hi: band.hi }
     this.paintClearance(part)
+    return true
   }
 
   /** Recolour the active clearance map for a new tolerance band. */

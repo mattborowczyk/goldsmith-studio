@@ -1002,10 +1002,9 @@ export async function computeClearanceMap(): Promise<void> {
       useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
       return
     }
-    eng.setClearanceMap(shellId, field.values, fitBand())
     // setClearanceMap is a no-op if the shell part vanished mid-compute — only
-    // claim an active map when it actually painted
-    const painted = eng.hasClearanceMap()
+    // claim an active map when this call actually painted (not just any map)
+    const painted = eng.setClearanceMap(shellId, field.values, fitBand())
     useAppStore.getState().patchFit({
       busy: false, progress: 1, stage: null,
       mapEnabled: painted,
