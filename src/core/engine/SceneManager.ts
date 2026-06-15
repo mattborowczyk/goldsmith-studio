@@ -30,6 +30,7 @@ import type {
 } from '../types'
 import { anglePointOnRing, pointAngleDeg } from '../geometry/resize'
 import { thicknessColor } from '../geometry/thickness'
+import { clearanceColor } from '../geometry/fit'
 import type { NamedMesh } from '../io/exporters'
 import { createBackMaterial, createMaterial } from './materials'
 import { createBackgroundTexture, createStudioEnvironment } from './environment'
@@ -56,6 +57,16 @@ interface HeatmapState {
   min: number
   max: number
   threshold: number
+}
+
+/** Active grillz clearance map: stored so a band drag recolours cheaply. */
+interface ClearanceState {
+  id: string
+  /** Per source-vertex signed gap to the tooth scan (mm). */
+  values: Float32Array
+  /** Green-band edges (mm) for the colour ramp. */
+  lo: number
+  hi: number
 }
 
 export interface SceneManagerEvents {
@@ -106,6 +117,7 @@ export class SceneManager {
   private clipPlanes: THREE.Plane[] = []
   private displayMode: DisplayMode = 'gold'
   private heatmap: HeatmapState | null = null
+  private clearance: ClearanceState | null = null
   private parts = new Map<string, ScenePart>()
   private partOrder: string[] = []
   private selectedId: string | null = null
@@ -381,6 +393,7 @@ export class SceneManager {
   /** Assign a part its effective material (override, else global mode) + back overlay. */
   private applyPartMaterial(part: ScenePart) {
     if (this.heatmap?.id === part.id) return // heatmap owns this part's material
+    if (this.clearance?.id === part.id) return // clearance map owns this part's material
     if (this.showsVertexColors(part)) {
       this.applyColorAttribute(part, part.vertexColors!)
       part.mesh.material = this.getVertexColorMaterial(part.flatShading)
@@ -447,6 +460,7 @@ export class SceneManager {
     const part = this.parts.get(id)
     if (!part) return
     if (this.heatmap?.id === id) this.heatmap = null
+    if (this.clearance?.id === id) this.clearance = null
     if (this.selectedId === id) this.select(null)
     this.scene.remove(part.mesh)
     part.displayGeometry.dispose()
@@ -1129,6 +1143,7 @@ export class SceneManager {
   ) {
     const part = this.parts.get(id)
     if (!part) return
+    this.clearClearanceMap() // heatmap + clearance map are mutually exclusive overlays
     if (this.heatmap && this.heatmap.id !== id) this.clearThicknessHeatmap()
     this.heatmap = { id, values, min: range.min, max: range.max, threshold }
     this.paintHeatmap(part)
@@ -1166,6 +1181,58 @@ export class SceneManager {
 
   hasThicknessHeatmap(): boolean {
     return this.heatmap !== null
+  }
+
+  // ---------- grillz clearance map (plan §3.1) ----------
+
+  /**
+   * Paint a per-source-vertex signed clearance field onto the grillz shell: red
+   * ≤ 0 (touch/interference) → green (in the cement-gap band [lo, hi]) → blue
+   * (too loose). Transient overlay, mutually exclusive with the wall-thickness
+   * heatmap. Dragging the band goes through setClearanceBand, which only recolours.
+   */
+  setClearanceMap(id: string, values: Float32Array, band: { lo: number; hi: number }) {
+    const part = this.parts.get(id)
+    if (!part) return
+    this.clearThicknessHeatmap()
+    if (this.clearance && this.clearance.id !== id) this.clearClearanceMap()
+    this.clearance = { id, values, lo: band.lo, hi: band.hi }
+    this.paintClearance(part)
+  }
+
+  /** Recolour the active clearance map for a new tolerance band. */
+  setClearanceBand(lo: number, hi: number) {
+    if (!this.clearance) return
+    this.clearance.lo = lo
+    this.clearance.hi = hi
+    const part = this.parts.get(this.clearance.id)
+    if (part) this.paintClearance(part)
+  }
+
+  private paintClearance(part: ScenePart) {
+    const c = this.clearance!
+    const srcColors = new Float32Array(part.data.positions.length)
+    for (let v = 0; v < c.values.length; v++) {
+      const [r, g, b] = clearanceColor(c.values[v], c.lo, c.hi)
+      srcColors[v * 3] = r
+      srcColors[v * 3 + 1] = g
+      srcColors[v * 3 + 2] = b
+    }
+    this.applyColorAttribute(part, srcColors)
+    part.mesh.material = this.getVertexColorMaterial(part.flatShading)
+    part.backMesh.visible = false
+  }
+
+  clearClearanceMap() {
+    const c = this.clearance
+    if (!c) return
+    this.clearance = null
+    const part = this.parts.get(c.id)
+    if (part) this.applyPartMaterial(part) // restores preset / imported colours
+  }
+
+  hasClearanceMap(): boolean {
+    return this.clearance !== null
   }
 
   // ---------- camera ----------

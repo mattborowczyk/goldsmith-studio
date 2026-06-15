@@ -2,6 +2,7 @@ import { SceneManager } from '@/core/engine/SceneManager'
 import { importFile, scaleMeshData } from '@/core/io/importers'
 import { repairClient } from '@/core/geometry/repairClient'
 import { thicknessClient, type ThicknessJob } from '@/core/geometry/thicknessClient'
+import { fitClient, type FitJob } from '@/core/geometry/fitClient'
 import {
   addHistoryEntries,
   clearHistoryStore,
@@ -83,6 +84,10 @@ let pickConsumer: 'measure' | 'resize' | null = null
 const revisions = new Map<string, { data: MeshData; matrix: number[] }[]>()
 /** In-flight wall-thickness compute, so the UI can cancel it. */
 let thicknessJob: ThicknessJob | null = null
+/** In-flight grillz fit op (offset / subtract / clearance map). */
+let fitJob: FitJob<unknown> | null = null
+/** Facet count of the Minkowski offset ball — coarse: a thin uniform gap needs no smooth sphere. */
+const FIT_SPHERE_SEGMENTS = 16
 
 export function getEngine(): SceneManager {
   if (!engine) throw new Error('Engine not initialized')
@@ -106,6 +111,10 @@ export function initEngine(container: HTMLElement): SceneManager {
     // reconcile the store so the Measure panel doesn't show a stale overlay
     if (s.measure.heatmap.enabled && !engine!.hasThicknessHeatmap()) {
       s.patchHeatmap({ enabled: false, busy: false, progress: 0, range: null, partId: null, error: null })
+    }
+    // same reconcile for the clearance map (e.g. its shell part was removed/replaced)
+    if (s.fit.mapEnabled && !engine!.hasClearanceMap()) {
+      s.patchFit({ mapEnabled: false, mapRange: null, mapPartId: null })
     }
     scheduleAutosave()
     if (s.tab === 'cost') scheduleVolumeRecompute()
@@ -795,6 +804,238 @@ export function clearThicknessHeatmap() {
 /** Tear the heatmap down when leaving the Measure tab. */
 export function teardownHeatmap() {
   if (useAppStore.getState().measure.heatmap.enabled || thicknessJob) clearThicknessHeatmap()
+}
+
+// ---------- grillz fit: cement-gap offset + clearance map (plan §3.1) ----------
+
+export function setFitScanPart(id: string | null) {
+  useAppStore.getState().patchFit({ scanPartId: id, error: null })
+}
+
+export function setFitShellPart(id: string | null) {
+  useAppStore.getState().patchFit({ shellPartId: id, error: null })
+}
+
+/** Cement gap (mm). Recolours a live clearance map without recomputing distances. */
+export function setFitClearance(mm: number) {
+  if (!Number.isFinite(mm)) return
+  useAppStore.getState().patchFit({ clearanceMm: mm })
+  recolourClearanceBand()
+}
+
+/** Tolerance band half-width (mm). Recolours a live clearance map cheaply. */
+export function setFitBandHalf(mm: number) {
+  if (!Number.isFinite(mm)) return
+  useAppStore.getState().patchFit({ bandHalfMm: mm })
+  recolourClearanceBand()
+}
+
+/** Green-band edges around the chosen clearance; lo is clamped non-negative. */
+function fitBand(): { lo: number; hi: number } {
+  const f = useAppStore.getState().fit
+  return { lo: Math.max(f.clearanceMm - f.bandHalfMm, 0), hi: f.clearanceMm + f.bandHalfMm }
+}
+
+function recolourClearanceBand() {
+  if (!useAppStore.getState().fit.mapEnabled) return
+  const { lo, hi } = fitBand()
+  getEngine().setClearanceBand(lo, hi)
+}
+
+/** The tooth scan: explicit pick, else the selection, else the only part. */
+function fitScanId(): string | null {
+  const s = useAppStore.getState()
+  return s.fit.scanPartId ?? s.selectedId ?? (s.parts.length === 1 ? s.parts[0].id : null)
+}
+
+/** The grillz shell: explicit pick, else inferred as the other part when there are two. */
+function fitShellId(scanId: string): string | null {
+  const s = useAppStore.getState()
+  if (s.fit.shellPartId) return s.fit.shellPartId
+  if (s.parts.length === 2) return s.parts.find((p) => p.id !== scanId)?.id ?? null
+  return null
+}
+
+function partName(id: string): string {
+  return useAppStore.getState().parts.find((p) => p.id === id)?.name ?? 'Part'
+}
+
+/** Manifold/heal failures → an actionable message instead of a raw WASM error. */
+function fitErrorMessage(err: unknown): string {
+  const s = String(err)
+  if (/manifold|watertight/i.test(s)) {
+    return 'Couldn’t make the mesh watertight — run Repair on the scan and shell first.'
+  }
+  return s
+}
+
+/**
+ * Action (b): generate the outward cement-gap offset of the tooth scan as a new
+ * part to sculpt over in Nomad / use as the boolean operand. Runs in the worker
+ * with staged progress; cancel resolves the UI immediately (the orphaned WASM
+ * result is discarded by the supersede check).
+ */
+export async function generateOffsetPart(): Promise<void> {
+  const store = useAppStore.getState()
+  const scanId = fitScanId()
+  if (!scanId) {
+    store.patchFit({ error: 'Select the tooth scan first.' })
+    return
+  }
+  const eng = getEngine()
+  const scan = eng.getWorldMeshData(scanId)
+  if (!scan) return
+  const clearance = store.fit.clearanceMm
+  fitJob?.cancel()
+  store.patchFit({ busy: true, progress: 0, stage: 'Starting', error: null })
+  const job = fitClient.offset(scan, clearance, FIT_SPHERE_SEGMENTS, (p, stage) =>
+    useAppStore.getState().patchFit({ progress: p, stage }),
+  )
+  fitJob = job
+  try {
+    const mesh = await job.promise
+    if (fitJob !== job) return // superseded / cancelled
+    fitJob = null
+    if (!mesh) {
+      useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+      return
+    }
+    addGeneratedPart(`${partName(scanId)} offset ${clearance.toFixed(2)}`, mesh, {
+      material: 'cutter',
+      flatShading: false,
+    })
+    useAppStore.getState().patchFit({ busy: false, progress: 1, stage: null, scanPartId: scanId })
+  } catch (err) {
+    if (fitJob !== job) return
+    fitJob = null
+    useAppStore.getState().patchFit({ busy: false, stage: null, error: fitErrorMessage(err) })
+  }
+}
+
+/**
+ * Action (a): offset the scan and boolean-subtract it from the sculpted shell in
+ * one job → a fitted grillz with uniform interior clearance, as a new part.
+ */
+export async function subtractFit(): Promise<void> {
+  const store = useAppStore.getState()
+  const scanId = fitScanId()
+  if (!scanId) {
+    store.patchFit({ error: 'Select the tooth scan first.' })
+    return
+  }
+  const shellId = fitShellId(scanId)
+  if (!shellId) {
+    store.patchFit({ error: 'Pick the grillz shell to subtract from.' })
+    return
+  }
+  if (shellId === scanId) {
+    store.patchFit({ error: 'The scan and the shell must be different parts.' })
+    return
+  }
+  const eng = getEngine()
+  const scan = eng.getWorldMeshData(scanId)
+  const shell = eng.getWorldMeshData(shellId)
+  if (!scan || !shell) return
+  const clearance = store.fit.clearanceMm
+  fitJob?.cancel()
+  store.patchFit({ busy: true, progress: 0, stage: 'Starting', error: null })
+  const job = fitClient.subtract(scan, shell, clearance, FIT_SPHERE_SEGMENTS, (p, stage) =>
+    useAppStore.getState().patchFit({ progress: p, stage }),
+  )
+  fitJob = job
+  try {
+    const mesh = await job.promise
+    if (fitJob !== job) return
+    fitJob = null
+    if (!mesh) {
+      useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+      return
+    }
+    addGeneratedPart(`${partName(shellId)} (fitted)`, mesh, { material: null, flatShading: false })
+    useAppStore.getState().patchFit({
+      busy: false, progress: 1, stage: null, scanPartId: scanId, shellPartId: shellId,
+    })
+  } catch (err) {
+    if (fitJob !== job) return
+    fitJob = null
+    useAppStore.getState().patchFit({ busy: false, stage: null, error: fitErrorMessage(err) })
+  }
+}
+
+/**
+ * The clearance map: colour the grillz shell by signed gap to the tooth scan —
+ * red (touch/interference) → green (in band) → blue (too loose). Compares the
+ * raw shell to the raw scan (the true gap), so it works on the original sculpt or
+ * a fitted result alike.
+ */
+export async function computeClearanceMap(): Promise<void> {
+  const store = useAppStore.getState()
+  const scanId = fitScanId()
+  if (!scanId) {
+    store.patchFit({ error: 'Select the tooth scan first.' })
+    return
+  }
+  const shellId = fitShellId(scanId)
+  if (!shellId) {
+    store.patchFit({ error: 'Pick the grillz shell to map.' })
+    return
+  }
+  if (shellId === scanId) {
+    store.patchFit({ error: 'The scan and the shell must be different parts.' })
+    return
+  }
+  const eng = getEngine()
+  const scan = eng.getWorldMeshData(scanId)
+  const shell = eng.getWorldMeshData(shellId)
+  if (!scan || !shell) return
+  fitJob?.cancel()
+  store.patchFit({ busy: true, progress: 0, stage: 'Measuring clearance', error: null })
+  const job = fitClient.clearance(shell, scan, (p, stage) =>
+    useAppStore.getState().patchFit({ progress: p, stage }),
+  )
+  fitJob = job
+  try {
+    const field = await job.promise
+    if (fitJob !== job) return
+    fitJob = null
+    if (!field) {
+      useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+      return
+    }
+    eng.setClearanceMap(shellId, field.values, fitBand())
+    useAppStore.getState().patchFit({
+      busy: false, progress: 1, stage: null,
+      mapEnabled: true, mapRange: { min: field.min, max: field.max }, mapPartId: shellId,
+      scanPartId: scanId, shellPartId: shellId,
+    })
+  } catch (err) {
+    if (fitJob !== job) return
+    fitJob = null
+    useAppStore.getState().patchFit({ busy: false, stage: null, error: fitErrorMessage(err) })
+  }
+}
+
+/** Abort an in-flight fit op; the UI unblocks at once. */
+export function cancelFit() {
+  fitJob?.cancel()
+  fitJob = null
+  useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+}
+
+/** Remove the clearance-map overlay, restoring the shell's normal material. */
+export function clearFitMap() {
+  engine?.clearClearanceMap()
+  useAppStore.getState().patchFit({ mapEnabled: false, mapRange: null, mapPartId: null })
+}
+
+/** Tear the fit overlay + any in-flight job down when leaving the Fit tab. */
+export function teardownFit() {
+  if (fitJob || useAppStore.getState().fit.mapEnabled) {
+    fitJob?.cancel()
+    fitJob = null
+    clearFitMap()
+    useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+  }
 }
 
 /** Drafting mode: orthographic side view, ready for a dimensioned snapshot. */

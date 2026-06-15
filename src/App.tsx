@@ -7,6 +7,7 @@ import { RepairPanel } from '@/components/panels/RepairPanel'
 import { MeasurePanel } from '@/components/panels/MeasurePanel'
 import { BuildPanel } from '@/components/panels/BuildPanel'
 import { ResizePanel } from '@/components/panels/ResizePanel'
+import { FitPanel } from '@/components/panels/FitPanel'
 import { CostPanel } from '@/components/panels/CostPanel'
 import { DeliverPanel } from '@/components/panels/DeliverPanel'
 import { PwaBanner } from '@/components/PwaBanner'
@@ -18,6 +19,7 @@ const TAB_TITLES: Record<string, string> = {
   measure: 'Measure & Sections',
   build: 'Generators',
   resize: 'Smart Resizer',
+  fit: 'Grillz Fit',
   cost: 'Weight & Cost',
   deliver: 'Export & Reports',
 }
@@ -41,6 +43,7 @@ export default function App() {
         {tab === 'measure' && <MeasurePanel />}
         {tab === 'build' && <BuildPanel />}
         {tab === 'resize' && <ResizePanel />}
+        {tab === 'fit' && <FitPanel />}
         {tab === 'cost' && <CostPanel />}
         {tab === 'deliver' && <DeliverPanel />}
       </aside>
