@@ -1,5 +1,5 @@
 import type { MeshData, Vec3 } from '../types'
-import type { BestAxisMsg, ClearanceMsg, FitRequest, FitResponse, SurveyMsg } from './fit.worker'
+import type { BestAxisMsg, ClearanceMsg, FitRequest, FitResponse, ShellMsg, SurveyMsg } from './fit.worker'
 
 export interface ClearanceResult {
   values: Float32Array
@@ -14,6 +14,11 @@ export interface SurveyResult {
 
 export interface BestAxisResult {
   axis: Vec3
+}
+
+export interface ShellResult {
+  mesh: MeshData
+  toothVolumes: number[]
 }
 
 export interface FitJob<T> {
@@ -141,6 +146,25 @@ class FitClient {
       [s.positions.buffer, s.indices.buffer],
       onProgress,
     )
+  }
+
+  /**
+   * Uniform-thickness shell following the offset surface (a new part). Clips to a
+   * brushed `selectedIndices` region when given; opens the gingival margin when set.
+   */
+  shell(
+    scan: MeshData, selectedIndices: Uint32Array | null, axis: Vec3,
+    clearanceMm: number, thicknessMm: number, openGingival: boolean, segments: number,
+    onProgress?: FitProgress,
+  ): FitJob<ShellResult> {
+    const s = clone(scan)
+    const sel = selectedIndices ? selectedIndices.slice() : null
+    const transfer = sel ? [s.positions.buffer, s.indices.buffer, sel.buffer] : [s.positions.buffer, s.indices.buffer]
+    return this.start<ShellMsg>(
+      { op: 'shell', scan: s, selectedIndices: sel, axis, clearanceMm, thicknessMm, openGingival, segments },
+      transfer,
+      onProgress,
+    ) as FitJob<ShellResult>
   }
 }
 

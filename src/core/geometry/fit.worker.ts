@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import type { MeshData, Vec3 } from '../types'
 import { computeClearance } from './fit'
-import { blockoutMesh, offsetMesh, subtractMesh } from './fitManifold'
+import { blockoutMesh, offsetMesh, shellMesh, subtractMesh } from './fitManifold'
 import { findBestAxis, surveyUndercut } from './undercut'
 
 /**
@@ -16,6 +16,8 @@ import { findBestAxis, surveyUndercut } from './undercut'
  *  - `survey`    per-scan-vertex undercut value along an insertion axis.
  *  - `bestAxis`  search the insertion axis minimising undercut area.
  *  - `blockout`  fill the undercuts → a draftable scan (a new part).
+ *  - `shell`     uniform-thickness shell following the offset surface (a new part),
+ *                optionally clipped to a brushed region, with per-tooth volumes.
  *
  * Manifold's Minkowski/boolean are synchronous WASM, so we can't interrupt them
  * mid-call from this single thread; instead the kernel half (fitManifold.ts)
@@ -30,6 +32,10 @@ export type FitRequest =
   | { id: number; op: 'survey'; scan: MeshData; axis: Vec3 }
   | { id: number; op: 'bestAxis'; scan: MeshData; seedAxis: Vec3 }
   | { id: number; op: 'blockout'; scan: MeshData; axis: Vec3; retentionMm: number; segments: number }
+  | {
+      id: number; op: 'shell'; scan: MeshData; selectedIndices: Uint32Array | null; axis: Vec3
+      clearanceMm: number; thicknessMm: number; openGingival: boolean; segments: number
+    }
   | { id: number; op: 'cancel' }
 
 export interface ClearanceMsg {
@@ -47,9 +53,15 @@ export interface BestAxisMsg {
   axis: Vec3
 }
 
+export interface ShellMsg {
+  mesh: MeshData
+  /** Per connected-component (≈per-tooth) shell volume, mm³, descending. */
+  toothVolumes: number[]
+}
+
 export type FitResponse =
   | { id: number; type: 'progress'; progress: number; stage: string }
-  | { id: number; type: 'done'; ok: true; result: MeshData | ClearanceMsg | SurveyMsg | BestAxisMsg }
+  | { id: number; type: 'done'; ok: true; result: MeshData | ClearanceMsg | SurveyMsg | BestAxisMsg | ShellMsg }
   | { id: number; type: 'done'; ok: true; cancelled: true }
   | { id: number; type: 'done'; ok: false; error: string }
 
@@ -121,6 +133,21 @@ self.onmessage = async (ev: MessageEvent<FitRequest>) => {
         const mesh = await blockoutMesh(req.scan, req.axis, req.retentionMm, req.segments, hooks(req.id))
         if (!mesh) postCancelled(req.id)
         else postMesh(req.id, mesh)
+        break
+      }
+      case 'shell': {
+        const result = await shellMesh(
+          req.scan, req.selectedIndices, req.axis,
+          req.clearanceMm, req.thicknessMm, req.openGingival, req.segments, hooks(req.id),
+        )
+        if (!result) postCancelled(req.id)
+        else {
+          cancelled.delete(req.id)
+          self.postMessage(
+            { id: req.id, type: 'done', ok: true, result } satisfies FitResponse,
+            { transfer: [result.mesh.positions.buffer, result.mesh.indices.buffer] },
+          )
+        }
         break
       }
     }

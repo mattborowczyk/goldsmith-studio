@@ -126,6 +126,10 @@ export function initEngine(container: HTMLElement): SceneManager {
       engine!.hideInsertionAxis()
       s.patchFit({ surveyEnabled: false, undercutArea: null, surveyPartId: null })
     }
+    // and for the brush-select (its scan part removed/replaced → disarm + drop the overlay)
+    if (s.fit.brushActive && !engine!.hasBrushSelect()) {
+      s.patchFit({ brushActive: false, brushCount: 0 })
+    }
     scheduleAutosave()
     if (s.tab === 'cost') scheduleVolumeRecompute()
   })
@@ -136,6 +140,7 @@ export function initEngine(container: HTMLElement): SceneManager {
   engine.on('pointPicked', handlePointPicked)
   engine.on('resizeHandleDrag', (protectedDeg) => setResizeProtectedWidth(protectedDeg))
   engine.on('insertionAxisChanged', (axis) => setInsertionAxisFromGizmo(axis))
+  engine.on('brushSelectionChanged', (count) => useAppStore.getState().patchFit({ brushCount: count }))
 
   void restoreSession()
   void initCostData()
@@ -1046,16 +1051,18 @@ export function clearFitMap() {
 /** Tear the fit overlay + any in-flight job down when leaving the Fit tab. */
 export function teardownFit() {
   const f = useAppStore.getState().fit
-  if (fitJob || f.mapEnabled || f.surveyEnabled) {
+  if (fitJob || f.mapEnabled || f.surveyEnabled || f.brushActive) {
     if (surveyDebounce) { clearTimeout(surveyDebounce); surveyDebounce = null }
     fitJob?.cancel()
     fitJob = null
     clearFitMap()
     engine?.clearUndercutSurvey()
     engine?.hideInsertionAxis()
+    engine?.setBrushSelect(null, 0)
     useAppStore.getState().patchFit({
       busy: false, progress: 0, stage: null,
       surveyEnabled: false, undercutArea: null, surveyPartId: null,
+      brushActive: false, brushCount: 0,
     })
   }
 }
@@ -1270,6 +1277,117 @@ export async function runBlockout(): Promise<void> {
     // the draftable blockout is selected and becomes the active scan for follow-up fit actions
     const newId = addGeneratedPart(`${partName(scan.id)} blockout${suffix}`, mesh, { material: null, flatShading: false })
     useAppStore.getState().patchFit({ busy: false, progress: 1, stage: null, scanPartId: newId })
+  } catch (err) {
+    if (fitJob !== job) return
+    fitJob = null
+    useAppStore.getState().patchFit({ busy: false, stage: null, error: fitErrorMessage(err) })
+  }
+}
+
+// ---------- grillz shell generator (plan §3.3) ----------
+
+/** Shell wall-thickness bounds (mm) — the grillz/dental range from the plan. */
+const MIN_SHELL_MM = 0.6
+const MAX_SHELL_MM = 1.5
+/** Fallback density (g/cm³) for the per-tooth weight when no cost material is assigned — 14k yellow. */
+const DEFAULT_GRILLZ_DENSITY = 13.05
+
+/** Arm/disarm the surface brush that selects which teeth the shell covers. */
+export function setBrushSelect(on: boolean): void {
+  const store = useAppStore.getState()
+  if (on) {
+    const id = fitScanId()
+    if (!id) {
+      store.patchFit({ error: 'Select the tooth scan first.' })
+      return
+    }
+    const eng = getEngine()
+    eng.setBrushSelect(id, store.fit.brushRadiusMm)
+    eng.setGizmoMode('none') // park the transform gizmo so painting doesn't grab a handle
+    store.patchFit({ brushActive: true, scanPartId: id, error: null })
+  } else {
+    getEngine().setBrushSelect(null, 0)
+    getEngine().setGizmoMode(store.gizmoMode)
+    store.patchFit({ brushActive: false })
+  }
+}
+
+/** Brush radius (mm). */
+export function setBrushRadius(mm: number): void {
+  if (!Number.isFinite(mm)) return
+  useAppStore.getState().patchFit({ brushRadiusMm: mm })
+  engine?.setBrushRadius(mm)
+}
+
+/** Empty the painted region (keeps the brush armed). */
+export function clearBrushSelection(): void {
+  getEngine().clearBrushSelection()
+}
+
+/** Uniform shell wall thickness (mm), clamped to the grillz range. */
+export function setShellThickness(mm: number): void {
+  if (!Number.isFinite(mm)) return
+  useAppStore.getState().patchFit({ shellThicknessMm: Math.min(Math.max(mm, MIN_SHELL_MM), MAX_SHELL_MM) })
+}
+
+/** Toggle the open gingival margin (grillz slide on from below). */
+export function setOpenGingival(open: boolean): void {
+  useAppStore.getState().patchFit({ openGingival: open })
+}
+
+/** Resolve a density (g/cm³) for the per-tooth weight: the scan's assigned cost material, else a default. */
+function shellDensity(scanId: string): number {
+  const cost = useAppStore.getState().cost
+  const matId = cost.assignments[scanId]
+  const mat = cost.materials.find((m) => m.id === matId)
+  return mat?.density ?? DEFAULT_GRILLZ_DENSITY
+}
+
+/**
+ * Generate the uniform-thickness grillz shell following the (blocked-out, offset)
+ * tooth surface — the perfect Nomad base. Interior = the cement-gap clearance
+ * surface; exterior = that surface grown by the wall thickness. Clipped to the
+ * brushed region when one exists; opened at the gingival margin by default. Adds a
+ * new part and reports a per-tooth (connected-component) weight estimate.
+ */
+export async function generateShell(): Promise<void> {
+  const store = useAppStore.getState()
+  const scanId = fitScanId()
+  if (!scanId) {
+    store.patchFit({ error: 'Select the tooth scan first.' })
+    return
+  }
+  const eng = getEngine()
+  const scan = eng.getWorldMeshData(scanId)
+  if (!scan) return
+  const { clearanceMm, shellThicknessMm, openGingival } = store.fit
+  // the gingival cut needs a "down" — the user's insertion axis if surveying, else the scan normal
+  const axis = store.fit.surveyEnabled ? store.fit.insertionAxis : defaultInsertionAxis(scan)
+  const selection = eng.getBrushSelection()
+  const indices = selection && selection.id === scanId ? selection.indices : null
+  fitJob?.cancel()
+  store.patchFit({ busy: true, progress: 0, stage: 'Starting', error: null })
+  const job = fitClient.shell(
+    scan, indices, axis, clearanceMm, shellThicknessMm, openGingival, FIT_SPHERE_SEGMENTS,
+    (p, stage) => useAppStore.getState().patchFit({ progress: p, stage }),
+  )
+  fitJob = job
+  try {
+    const result = await job.promise
+    if (fitJob !== job) return // superseded / cancelled
+    fitJob = null
+    if (!result) {
+      useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+      return
+    }
+    addGeneratedPart(`${partName(scanId)} shell ${shellThicknessMm.toFixed(1)}`, result.mesh, {
+      material: null, flatShading: false,
+    })
+    const density = shellDensity(scanId)
+    const toothWeights = result.toothVolumes.map((v) => weightGrams(v, density))
+    useAppStore.getState().patchFit({
+      busy: false, progress: 1, stage: null, scanPartId: scanId, toothWeights,
+    })
   } catch (err) {
     if (fitJob !== job) return
     fitJob = null

@@ -76,6 +76,17 @@ interface SurveyState {
   values: Float32Array
 }
 
+/** Active surface brush-select (plan §3.3): the painted scan-vertex region for the shell. */
+interface BrushState {
+  id: string
+  /** Brush radius in world units (mm). */
+  radius: number
+  /** Selected source-vertex indices. */
+  selected: Set<number>
+  /** World-space source-vertex positions, cached so each stroke move is one pass. */
+  worldPos: Float32Array
+}
+
 /** The draggable insertion-axis arrow overlay (plan §3.2). */
 interface AxisGizmo {
   group: THREE.Group
@@ -98,6 +109,8 @@ export interface SceneManagerEvents {
   resizeHandleDrag: (protectedDeg: number) => void
   /** The insertion-axis arrow gizmo was dragged to a new (normalised) direction. */
   insertionAxisChanged: (axis: Vec3) => void
+  /** The surface brush-select painted/erased — carries the new selected-vertex count. */
+  brushSelectionChanged: (count: number) => void
 }
 
 /** One rendered dimension: line + endpoint markers + screen-sized label. */
@@ -139,6 +152,8 @@ export class SceneManager {
   private heatmap: HeatmapState | null = null
   private clearance: ClearanceState | null = null
   private survey: SurveyState | null = null
+  private brush: BrushState | null = null
+  private painting = false
   private parts = new Map<string, ScenePart>()
   private partOrder: string[] = []
   private selectedId: string | null = null
@@ -166,6 +181,7 @@ export class SceneManager {
     pointPicked: new Set(),
     resizeHandleDrag: new Set(),
     insertionAxisChanged: new Set(),
+    brushSelectionChanged: new Set(),
   }
   private tween: {
     fromPos: THREE.Vector3
@@ -263,7 +279,7 @@ export class SceneManager {
     // resizer / insertion-axis handle drag takes priority over tap-select / orbit
     this.renderer.domElement.addEventListener('pointerdown', (e) => {
       this.downPos.set(e.clientX, e.clientY)
-      if (this.tryGrabHandle(e) || this.tryGrabAxisHandle(e)) {
+      if (this.tryGrabHandle(e) || this.tryGrabAxisHandle(e) || this.tryStartPaint(e)) {
         this.controls.enabled = false
         try {
           this.renderer.domElement.setPointerCapture(e.pointerId)
@@ -275,10 +291,12 @@ export class SceneManager {
     this.renderer.domElement.addEventListener('pointermove', (e) => {
       if (this.draggingHandle !== null) this.updateHandleDrag(e)
       else if (this.draggingAxis) this.updateAxisDrag(e)
+      else if (this.painting) this.paintAt(e)
     })
     this.renderer.domElement.addEventListener('pointercancel', (e) => {
       this.endHandleDrag(e.pointerId)
       this.endAxisDrag(e.pointerId)
+      this.endPaint(e.pointerId)
     })
     this.renderer.domElement.addEventListener('pointerup', (e) => {
       if (this.draggingHandle !== null) {
@@ -287,6 +305,10 @@ export class SceneManager {
       }
       if (this.draggingAxis) {
         this.endAxisDrag(e.pointerId)
+        return
+      }
+      if (this.painting) {
+        this.endPaint(e.pointerId)
         return
       }
       const dx = e.clientX - this.downPos.x
@@ -430,6 +452,7 @@ export class SceneManager {
     if (this.heatmap?.id === part.id) return // heatmap owns this part's material
     if (this.clearance?.id === part.id) return // clearance map owns this part's material
     if (this.survey?.id === part.id) return // undercut survey owns this part's material
+    if (this.brush?.id === part.id) return // brush-select overlay owns this part's material
     if (this.showsVertexColors(part)) {
       this.applyColorAttribute(part, part.vertexColors!)
       part.mesh.material = this.getVertexColorMaterial(part.flatShading)
@@ -498,6 +521,7 @@ export class SceneManager {
     if (this.heatmap?.id === id) this.heatmap = null
     if (this.clearance?.id === id) this.clearance = null
     if (this.survey?.id === id) this.survey = null
+    if (this.brush?.id === id) { this.brush = null; this.painting = false }
     if (this.selectedId === id) this.select(null)
     this.scene.remove(part.mesh)
     part.displayGeometry.dispose()
@@ -631,6 +655,7 @@ export class SceneManager {
   }
 
   private handleTap(e: PointerEvent) {
+    if (this.brush) return // brush mode consumes taps (painting), never selects
     const ndc = this.ndcOf(e)
     this.raycaster.setFromCamera(ndc, this.activeCamera)
     const meshes = [...this.parts.values()].filter((p) => p.mesh.visible).map((p) => p.mesh)
@@ -1325,6 +1350,139 @@ export class SceneManager {
 
   hasUndercutSurvey(): boolean {
     return this.survey !== null
+  }
+
+  // ---------- grillz surface brush-select (plan §3.3) ----------
+
+  /**
+   * Arm/disarm the surface brush on part `id` (null disarms). Drag over the scan to
+   * paint the teeth the shell will cover (hold Alt to erase). The selection is shown
+   * as a transient overlay; world-space vertex positions are cached up front so each
+   * stroke move is a single O(verts) radius pass. Re-arming the same part keeps the
+   * existing selection.
+   */
+  setBrushSelect(id: string | null, radius: number) {
+    if (!id) {
+      this.clearBrushOverlay()
+      return
+    }
+    const part = this.parts.get(id)
+    if (!part) return
+    if (this.brush && this.brush.id !== id) this.clearBrushOverlay()
+    // the brush overlay is mutually exclusive with the other vertex-colour overlays
+    this.clearThicknessHeatmap()
+    this.clearClearanceMap()
+    this.clearUndercutSurvey()
+    const selected = this.brush?.id === id ? this.brush.selected : new Set<number>()
+    this.brush = { id, radius, selected, worldPos: this.worldVertexPositions(part) }
+    this.paintBrushOverlay(part)
+  }
+
+  setBrushRadius(radius: number) {
+    if (this.brush) this.brush.radius = radius
+  }
+
+  /** Empty the painted selection (keeps the brush armed). */
+  clearBrushSelection() {
+    if (!this.brush) return
+    this.brush.selected.clear()
+    const part = this.parts.get(this.brush.id)
+    if (part) this.paintBrushOverlay(part)
+    this.emit('brushSelectionChanged', 0)
+  }
+
+  /** The painted selection as source-vertex indices, or null if none/unarmed. */
+  getBrushSelection(): { id: string; indices: Uint32Array } | null {
+    if (!this.brush || this.brush.selected.size === 0) return null
+    return { id: this.brush.id, indices: Uint32Array.from(this.brush.selected) }
+  }
+
+  hasBrushSelect(): boolean {
+    return this.brush !== null
+  }
+
+  /** Begin a paint stroke if the brush is armed and the pointer is over its part. */
+  private tryStartPaint(e: PointerEvent): boolean {
+    if (!this.brush) return false
+    const part = this.parts.get(this.brush.id)
+    if (!part || !part.mesh.visible) return false
+    this.raycaster.setFromCamera(this.ndcOf(e), this.activeCamera)
+    if (!this.raycaster.intersectObject(part.mesh, false).length) return false
+    this.painting = true
+    this.paintAt(e)
+    return true
+  }
+
+  /** Add (or, with Alt, remove) all selected-part vertices within the brush radius of the hit. */
+  private paintAt(e: PointerEvent) {
+    const brush = this.brush
+    if (!brush) return
+    const part = this.parts.get(brush.id)
+    if (!part) return
+    this.raycaster.setFromCamera(this.ndcOf(e), this.activeCamera)
+    const hits = this.raycaster.intersectObject(part.mesh, false)
+    if (!hits.length) return
+    const { x, y, z } = hits[0].point
+    const r2 = brush.radius * brush.radius
+    const erase = e.altKey
+    const pos = brush.worldPos
+    let changed = false
+    for (let v = 0; v < pos.length / 3; v++) {
+      const dx = pos[v * 3] - x, dy = pos[v * 3 + 1] - y, dz = pos[v * 3 + 2] - z
+      if (dx * dx + dy * dy + dz * dz > r2) continue
+      if (erase) changed = brush.selected.delete(v) || changed
+      else if (!brush.selected.has(v)) { brush.selected.add(v); changed = true }
+    }
+    if (!changed) return
+    this.paintBrushOverlay(part)
+    this.emit('brushSelectionChanged', brush.selected.size)
+  }
+
+  private endPaint(pointerId: number) {
+    if (!this.painting) return
+    this.painting = false
+    this.controls.enabled = true
+    try {
+      this.renderer.domElement.releasePointerCapture(pointerId)
+    } catch {
+      // capture may never have been taken; ignore
+    }
+  }
+
+  /** World-space copy of a part's source vertices (data-order, for the brush radius test). */
+  private worldVertexPositions(part: ScenePart): Float32Array {
+    const src = part.data.positions
+    const out = new Float32Array(src.length)
+    const m = part.mesh.matrixWorld
+    const v = new THREE.Vector3()
+    for (let i = 0; i < src.length; i += 3) {
+      v.set(src[i], src[i + 1], src[i + 2]).applyMatrix4(m)
+      out[i] = v.x; out[i + 1] = v.y; out[i + 2] = v.z
+    }
+    return out
+  }
+
+  private paintBrushOverlay(part: ScenePart) {
+    const sel = this.brush!.selected
+    const srcColors = new Float32Array(part.data.positions.length)
+    for (let v = 0; v < srcColors.length / 3; v++) {
+      const on = sel.has(v)
+      srcColors[v * 3] = on ? 0.12 : 0.6
+      srcColors[v * 3 + 1] = on ? 0.8 : 0.6
+      srcColors[v * 3 + 2] = on ? 0.95 : 0.6
+    }
+    this.applyColorAttribute(part, srcColors)
+    part.mesh.material = this.getVertexColorMaterial(part.flatShading)
+    part.backMesh.visible = false
+  }
+
+  private clearBrushOverlay() {
+    const b = this.brush
+    if (!b) return
+    this.brush = null
+    this.painting = false
+    const part = this.parts.get(b.id)
+    if (part) this.applyPartMaterial(part) // restores preset / imported colours
   }
 
   // ---------- insertion-axis gizmo (plan §3.2) ----------

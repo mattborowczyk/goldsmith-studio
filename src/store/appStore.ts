@@ -155,6 +155,19 @@ export interface FitState {
   surveyPartId: string | null
   /** Retention allowance for blockout (mm) — leaves a snap-fit undercut lip. */
   retentionMm: number
+  // ----- shell generator (plan §3.3) -----
+  /** Surface brush-select is armed (paint the teeth the shell covers). */
+  brushActive: boolean
+  /** Brush radius in mm. */
+  brushRadiusMm: number
+  /** Count of brushed scan vertices — drives the "selection ready" affordance. */
+  brushCount: number
+  /** Uniform shell wall thickness (mm). */
+  shellThicknessMm: number
+  /** Trim the shell at the scan base, opening the cavity at the gingival margin. */
+  openGingival: boolean
+  /** Per-tooth (connected-component) weight estimate of the last shell, grams. */
+  toothWeights: number[] | null
   error: string | null
 }
 
@@ -331,6 +344,12 @@ export const useAppStore = create<AppState>((set) => ({
     undercutArea: null,
     surveyPartId: null,
     retentionMm: 0,
+    brushActive: false,
+    brushRadiusMm: 1.5,
+    brushCount: 0,
+    shellThicknessMm: 1.0,
+    openGingival: true,
+    toothWeights: null,
     error: null,
   },
   deliver: {
