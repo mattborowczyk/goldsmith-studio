@@ -2,6 +2,7 @@ import Module from 'manifold-3d'
 import type { Manifold, ManifoldToplevel, Mat4 } from 'manifold-3d'
 import type { MeshData, Vec3 } from '../types'
 import { fillHoles, fixWinding, removeDegenerateTriangles, weldVertices } from './meshRepair'
+import { buildSelectionPrism, perToothVolumes } from './shell'
 
 /**
  * Manifold-kernel half of the grillz fit pipeline (plan §3.1): the Minkowski-
@@ -159,6 +160,94 @@ export async function blockoutMesh(
     ball?.delete()
     fillEroded?.delete()
     result?.delete()
+  }
+}
+
+export interface ShellResult {
+  mesh: MeshData
+  /** Per connected-component (≈per-tooth) shell volume, mm³, descending. */
+  toothVolumes: number[]
+}
+
+/** Headroom (mm) added to the selection prism past the shell's outer face, so it isn't clipped. */
+const SELECTION_CAP_MARGIN = 0.5
+
+/**
+ * Uniform-thickness grillz shell (plan §3.3, the slice-3 headline). The shell's
+ * interior matches the cement-gap clearance surface (`scan ⊕ sphere(clearance)`);
+ * the exterior is that surface grown outward by `thicknessMm`
+ * (`scan ⊕ sphere(clearance + thickness)`). Subtracting the two gives a watertight
+ * shell of uniform wall thickness that follows the (blocked-out) tooth surface — a
+ * perfect Nomad base.
+ *
+ *  - `selectedIndices` (a brushed region): the shell is intersected with a prism
+ *    extruded from that sub-patch along `axis`, clipping it to the chosen teeth.
+ *  - `openGingival`: trims the wrap-under cap at the scan's axial base, opening the
+ *    cavity at the gingival margin (grillz slide on from below).
+ *
+ * Per-component volumes (≈per-tooth) are returned for the weight estimate. Both
+ * offsets are heal-guarded; staged progress + cancel like the other Manifold ops.
+ * Returns null if cancelled between stages.
+ */
+export async function shellMesh(
+  scan: MeshData,
+  selectedIndices: Uint32Array | null,
+  axis: Vec3,
+  clearanceMm: number,
+  thicknessMm: number,
+  openGingival: boolean,
+  segments: number,
+  hooks: ManifoldHooks = {},
+): Promise<ShellResult | null> {
+  const wasm = await getManifold()
+  const a = unit(axis)
+  const { lo } = axialRange(scan.positions, a)
+  const prismData =
+    selectedIndices && selectedIndices.length
+      ? buildSelectionPrism(scan, new Set(selectedIndices), a, clearanceMm + thicknessMm + SELECTION_CAP_MARGIN)
+      : null
+
+  if (await checkpoint(hooks, 0.08, 'Healing scan')) return null
+  const scanMan = toManifold(wasm, scan)
+  const ballC = clearanceMm > 1e-4 ? wasm.Manifold.sphere(clearanceMm, segments) : null
+  const ballO = wasm.Manifold.sphere(clearanceMm + thicknessMm, segments)
+  let inner: Manifold | null = null
+  let outer: Manifold | null = null
+  let shell: Manifold | null = null
+  let prismMan: Manifold | null = null
+  let clipped: Manifold | null = null
+  let trimmed: Manifold | null = null
+  try {
+    if (await checkpoint(hooks, 0.3, 'Offsetting interior')) return null
+    inner = ballC ? scanMan.minkowskiSum(ballC) : scanMan.translate(0, 0, 0)
+    if (await checkpoint(hooks, 0.55, 'Offsetting exterior')) return null
+    outer = scanMan.minkowskiSum(ballO)
+    if (await checkpoint(hooks, 0.78, 'Hollowing shell')) return null
+    shell = outer.subtract(inner)
+    let current = shell
+    if (prismData) {
+      if (await checkpoint(hooks, 0.86, 'Clipping to selection')) return null
+      prismMan = toManifold(wasm, prismData)
+      clipped = current.intersect(prismMan)
+      current = clipped
+    }
+    if (openGingival) {
+      trimmed = current.trimByPlane(a, lo) // drop the wrap-under cap → open the cavity
+      current = trimmed
+    }
+    if (await checkpoint(hooks, 0.95, 'Building surface')) return null
+    const mesh = meshOf(current)
+    return { mesh, toothVolumes: perToothVolumes(mesh) }
+  } finally {
+    scanMan.delete()
+    ballC?.delete()
+    ballO.delete()
+    inner?.delete()
+    outer?.delete()
+    shell?.delete()
+    prismMan?.delete()
+    clipped?.delete()
+    trimmed?.delete()
   }
 }
 

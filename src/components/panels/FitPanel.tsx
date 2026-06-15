@@ -1,19 +1,27 @@
 import { useEffect } from 'react'
-import { Box, Compass, Gauge, Layers, Loader2, Radar, RotateCcw, Scissors, Trash2, X } from 'lucide-react'
+import {
+  Box, Brush, Compass, Gauge, Layers, Loader2, Radar, RotateCcw, Scissors, Shell, Trash2, X,
+} from 'lucide-react'
 import {
   cancelFit,
+  clearBrushSelection,
   clearFitMap,
   computeClearanceMap,
   findBestFitAxis,
   generateOffsetPart,
+  generateShell,
   resetInsertionAxis,
   runBlockout,
+  setBrushRadius,
+  setBrushSelect,
   setFitBandHalf,
   setFitClearance,
   setFitScanPart,
   setFitShellPart,
   setInsertionAxis,
+  setOpenGingival,
   setRetention,
+  setShellThickness,
   subtractFit,
   teardownFit,
   toggleSurvey,
@@ -26,6 +34,9 @@ import type { Vec3 } from '@/core/types'
 
 /** Cement-gap presets (mm) — typical grillz/dental clearance band. */
 const CLEARANCE_PRESETS = [0.03, 0.05, 0.08, 0.12]
+
+/** Shell wall-thickness presets (mm) — the grillz/dental range. */
+const SHELL_PRESETS = [0.6, 0.8, 1.0, 1.2, 1.5]
 
 /** The clearance ramp: red (touch) → green (in band) → blue (loose). */
 const CLEARANCE_GRADIENT =
@@ -286,6 +297,114 @@ function UndercutSection() {
   )
 }
 
+function ShellSection() {
+  const fit = useAppStore((s) => s.fit)
+  const parts = useAppStore((s) => s.parts)
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border/60 pt-3">
+      <span className="text-xs font-medium text-muted-foreground">Shell generator</span>
+      <p className="text-[11px] text-muted-foreground">
+        Builds a uniform-thickness shell that follows the offset tooth surface — a clean Nomad base.
+        Brush the teeth to cover, or generate over the whole scan.
+      </p>
+
+      <div className="flex gap-2">
+        <Button
+          className="flex-1"
+          variant={fit.brushActive ? 'default' : 'secondary'}
+          disabled={parts.length === 0 || fit.busy}
+          onClick={() => setBrushSelect(!fit.brushActive)}
+        >
+          <Brush />
+          {fit.brushActive ? 'Brushing region' : 'Brush region'}
+        </Button>
+        {fit.brushActive && (
+          <Button variant="ghost" size="icon" title="Clear selection" onClick={clearBrushSelection}>
+            <Trash2 />
+          </Button>
+        )}
+      </div>
+
+      {fit.brushActive && (
+        <>
+          <label className="text-xs text-muted-foreground">
+            Brush radius <span className="readout text-foreground">{fit.brushRadiusMm.toFixed(1)} mm</span>
+            <Slider
+              min={0.5}
+              max={5}
+              step={0.5}
+              value={[fit.brushRadiusMm]}
+              onValueChange={([mm]) => setBrushRadius(mm)}
+            />
+          </label>
+          <p className="text-[10px] text-muted-foreground/70">
+            Drag over the scan to paint; hold Alt to erase. {fit.brushCount} vertices selected.
+          </p>
+        </>
+      )}
+
+      <div className="flex gap-1">
+        {SHELL_PRESETS.map((mm) => (
+          <Button
+            key={mm}
+            variant={Math.abs(fit.shellThicknessMm - mm) < 1e-6 ? 'default' : 'secondary'}
+            size="sm"
+            className="flex-1 tabular-nums"
+            onClick={() => setShellThickness(mm)}
+          >
+            {mm.toFixed(1)}
+          </Button>
+        ))}
+      </div>
+      <label className="text-xs text-muted-foreground">
+        Wall thickness <span className="readout text-foreground">{fit.shellThicknessMm.toFixed(2)} mm</span>
+        <Slider
+          min={0.6}
+          max={1.5}
+          step={0.1}
+          value={[fit.shellThicknessMm]}
+          onValueChange={([mm]) => setShellThickness(mm)}
+        />
+      </label>
+
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={fit.openGingival}
+          onChange={(e) => setOpenGingival(e.target.checked)}
+        />
+        Open gingival margin (slide-on)
+      </label>
+
+      <Button variant="secondary" disabled={parts.length === 0 || fit.busy} onClick={() => void generateShell()}>
+        <Shell /> Generate shell
+      </Button>
+
+      {fit.toothWeights && fit.toothWeights.length > 0 && (
+        <div className="flex flex-col gap-0.5 rounded-lg bg-muted/40 p-2 text-[11px] text-muted-foreground">
+          {fit.toothWeights.length > 1 && (
+            <div className="flex flex-col gap-0.5">
+              {fit.toothWeights.map((g, i) => (
+                <div key={i} className="flex justify-between">
+                  <span>Tooth {i + 1}</span>
+                  <span className="readout text-foreground">{g.toFixed(2)} g</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex justify-between border-t border-border/60 pt-0.5 font-medium">
+            <span>Total ({fit.toothWeights.length})</span>
+            <span className="readout text-foreground">
+              {fit.toothWeights.reduce((a, b) => a + b, 0).toFixed(2)} g
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function FitPanel() {
   // tear the clearance map + any in-flight job down on tab switch
   useEffect(() => {
@@ -305,6 +424,7 @@ export function FitPanel() {
       <ActionsSection />
       <ClearanceMapSection />
       <UndercutSection />
+      <ShellSection />
       {error && (
         <p className="rounded-lg bg-destructive/15 px-3 py-2 text-xs text-destructive">{error}</p>
       )}
