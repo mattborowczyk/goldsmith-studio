@@ -1,21 +1,28 @@
 import { useEffect } from 'react'
-import { Gauge, Layers, Loader2, Scissors, Trash2, X } from 'lucide-react'
+import { Box, Compass, Gauge, Layers, Loader2, Radar, RotateCcw, Scissors, Trash2, X } from 'lucide-react'
 import {
   cancelFit,
   clearFitMap,
   computeClearanceMap,
+  findBestFitAxis,
   generateOffsetPart,
+  resetInsertionAxis,
+  runBlockout,
   setFitBandHalf,
   setFitClearance,
   setFitScanPart,
   setFitShellPart,
+  setInsertionAxis,
+  setRetention,
   subtractFit,
   teardownFit,
+  toggleSurvey,
 } from '@/app/studio'
 import { useAppStore } from '@/store/appStore'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
 import { Slider } from '@/components/ui/slider'
+import type { Vec3 } from '@/core/types'
 
 /** Cement-gap presets (mm) — typical grillz/dental clearance band. */
 const CLEARANCE_PRESETS = [0.03, 0.05, 0.08, 0.12]
@@ -23,6 +30,16 @@ const CLEARANCE_PRESETS = [0.03, 0.05, 0.08, 0.12]
 /** The clearance ramp: red (touch) → green (in band) → blue (loose). */
 const CLEARANCE_GRADIENT =
   'linear-gradient(to right, rgb(230,41,41), rgb(51,199,82), rgb(51,107,235))'
+
+/** The survey ramp: amber (shallow undercut) → red (deep). */
+const UNDERCUT_GRADIENT = 'linear-gradient(to right, rgb(245,168,33), rgb(230,41,41))'
+
+/** World-axis snap presets for the insertion direction. */
+const AXIS_SNAPS: { label: string; axis: Vec3 }[] = [
+  { label: '+X', axis: [1, 0, 0] }, { label: '−X', axis: [-1, 0, 0] },
+  { label: '+Y', axis: [0, 1, 0] }, { label: '−Y', axis: [0, -1, 0] },
+  { label: '+Z', axis: [0, 0, 1] }, { label: '−Z', axis: [0, 0, -1] },
+]
 
 function OperandSection() {
   const fit = useAppStore((s) => s.fit)
@@ -181,6 +198,94 @@ function ClearanceMapSection() {
   )
 }
 
+function UndercutSection() {
+  const fit = useAppStore((s) => s.fit)
+  const parts = useAppStore((s) => s.parts)
+  const axis = fit.insertionAxis
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border/60 pt-3">
+      <span className="text-xs font-medium text-muted-foreground">Undercut survey & blockout</span>
+      <p className="text-[11px] text-muted-foreground">
+        Colours the scan red/amber where it can’t draw off along the insertion axis. Drag the arrow to
+        re-aim, then fill the undercuts to a clean seat.
+      </p>
+      <div className="flex gap-2">
+        <Button
+          className="flex-1"
+          variant={fit.surveyEnabled ? 'default' : 'secondary'}
+          disabled={parts.length === 0 || fit.busy}
+          onClick={toggleSurvey}
+        >
+          <Radar />
+          {fit.surveyEnabled ? 'Clear survey' : 'Run undercut survey'}
+        </Button>
+      </div>
+
+      {fit.surveyEnabled && (
+        <>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" disabled={fit.busy} onClick={resetInsertionAxis}>
+              <RotateCcw /> Reset axis
+            </Button>
+            <span className="readout flex-1 text-right text-[11px] text-muted-foreground">
+              {axis.map((n) => n.toFixed(2)).join(', ')}
+            </span>
+          </div>
+          <div className="flex gap-1">
+            {AXIS_SNAPS.map((s) => (
+              <Button
+                key={s.label}
+                variant="secondary"
+                size="sm"
+                className="flex-1 tabular-nums"
+                disabled={fit.busy}
+                onClick={() => setInsertionAxis(s.axis)}
+              >
+                {s.label}
+              </Button>
+            ))}
+          </div>
+          <Button variant="secondary" disabled={fit.busy} onClick={() => void findBestFitAxis()}>
+            <Compass /> Find best axis
+          </Button>
+
+          {fit.undercutArea !== null && (
+            <>
+              <div className="h-2.5 w-full rounded-full" style={{ background: UNDERCUT_GRADIENT }} />
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>clear · neutral</span>
+                <span>shallow</span>
+                <span>deep undercut</span>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Undercut area <span className="readout text-foreground">{fit.undercutArea.toFixed(2)} mm²</span>
+              </p>
+            </>
+          )}
+
+          <label className="text-xs text-muted-foreground">
+            Retention <span className="readout text-foreground">{fit.retentionMm.toFixed(3)} mm</span>
+            <Slider
+              min={0}
+              max={0.05}
+              step={0.005}
+              value={[fit.retentionMm]}
+              onValueChange={([mm]) => setRetention(mm)}
+            />
+          </label>
+          <Button variant="secondary" disabled={fit.busy} onClick={() => void runBlockout()}>
+            <Box /> Blockout undercuts
+          </Button>
+          <p className="text-[10px] text-muted-foreground/70">
+            Blockout adds a new, draftable scan part. Retention leaves a little undercut for snap-fit grip.
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function FitPanel() {
   // tear the clearance map + any in-flight job down on tab switch
   useEffect(() => {
@@ -199,6 +304,7 @@ export function FitPanel() {
       <ClearanceSection />
       <ActionsSection />
       <ClearanceMapSection />
+      <UndercutSection />
       {error && (
         <p className="rounded-lg bg-destructive/15 px-3 py-2 text-xs text-destructive">{error}</p>
       )}

@@ -1,10 +1,19 @@
-import type { MeshData } from '../types'
-import type { ClearanceMsg, FitRequest, FitResponse } from './fit.worker'
+import type { MeshData, Vec3 } from '../types'
+import type { BestAxisMsg, ClearanceMsg, FitRequest, FitResponse, SurveyMsg } from './fit.worker'
 
 export interface ClearanceResult {
   values: Float32Array
   min: number
   max: number
+}
+
+export interface SurveyResult {
+  values: Float32Array
+  area: number
+}
+
+export interface BestAxisResult {
+  axis: Vec3
 }
 
 export interface FitJob<T> {
@@ -100,6 +109,38 @@ class FitClient {
       [h.positions.buffer, h.indices.buffer, s.positions.buffer, s.indices.buffer],
       onProgress,
     ) as FitJob<ClearanceResult>
+  }
+
+  /** Per-scan-vertex undercut value along an insertion axis (the survey). */
+  survey(scan: MeshData, axis: Vec3, onProgress?: FitProgress): FitJob<SurveyResult> {
+    const s = clone(scan)
+    return this.start<SurveyMsg>(
+      { op: 'survey', scan: s, axis },
+      [s.positions.buffer, s.indices.buffer],
+      onProgress,
+    ) as FitJob<SurveyResult>
+  }
+
+  /** Search the insertion axis minimising undercut area (around a seed axis). */
+  bestAxis(scan: MeshData, seedAxis: Vec3, onProgress?: FitProgress): FitJob<BestAxisResult> {
+    const s = clone(scan)
+    return this.start<BestAxisMsg>(
+      { op: 'bestAxis', scan: s, seedAxis },
+      [s.positions.buffer, s.indices.buffer],
+      onProgress,
+    ) as FitJob<BestAxisResult>
+  }
+
+  /** Fill the scan's undercuts along the axis → a draftable scan (retention lip optional). */
+  blockout(
+    scan: MeshData, axis: Vec3, retentionMm: number, segments: number, onProgress?: FitProgress,
+  ): FitJob<MeshData> {
+    const s = clone(scan)
+    return this.start(
+      { op: 'blockout', scan: s, axis, retentionMm, segments },
+      [s.positions.buffer, s.indices.buffer],
+      onProgress,
+    )
   }
 }
 
