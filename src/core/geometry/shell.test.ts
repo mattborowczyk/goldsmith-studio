@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { shellMesh } from './fitManifold'
-import { buildSelectionPrism } from './shell'
+import { buildSelectionPrism, perToothVolumes } from './shell'
 import { computeThickness } from './thickness'
 import { analyzeMesh } from './meshAnalysis'
-import { makeCube, mergeMeshes } from './testFixtures'
+import { invert, makeCube, mergeMeshes } from './testFixtures'
 import type { MeshData, Vec3 } from '../types'
 
 const Y: Vec3 = [0, 1, 0]
@@ -98,6 +98,25 @@ describe('shellMesh', () => {
     const { max } = bounds(result!.mesh)
     expect(max[0]).toBeLessThan(15) // the second cube's shell (x≈20–30) is gone
   }, 30000)
+})
+
+describe('perToothVolumes', () => {
+  // A hollow box is two disconnected surfaces (outer shell + inner cavity) whose bounds
+  // nest — they must group into one tooth, not count as two. This guards the
+  // containment grouping against a regression to plain AABB overlap.
+  it('groups a cavity with its enclosing outer into one tooth', () => {
+    const hollow = mergeMeshes(makeCube(10), invert(makeCube(6, [2, 2, 2])))
+    const vols = perToothVolumes(hollow)
+    expect(vols.length).toBe(1)
+    expect(vols[0]).toBeCloseTo(10 ** 3 - 6 ** 3, 5) // wall volume = outer − cavity
+  })
+
+  // Two such hollow boxes, far apart, stay two teeth — neither's bounds contain the other.
+  it('keeps two separated hollow boxes as two teeth', () => {
+    const a = mergeMeshes(makeCube(10), invert(makeCube(6, [2, 2, 2])))
+    const b = mergeMeshes(makeCube(10, [40, 0, 0]), invert(makeCube(6, [42, 2, 2])))
+    expect(perToothVolumes(mergeMeshes(a, b)).length).toBe(2)
+  })
 })
 
 describe('buildSelectionPrism', () => {

@@ -138,20 +138,23 @@ export function perToothVolumes(mesh: MeshData): number[] {
     }
   }
 
-  // union components with overlapping bounds (an inner cavity nests in its outer)
+  // union an inner cavity with its outer (the inner's bounds nest inside the outer's).
+  // Containment — not mere AABB overlap — so two side-by-side teeth whose bounds just
+  // graze each other aren't collapsed into one.
   const parent = new Int32Array(shellCount)
   for (let s = 0; s < shellCount; s++) parent[s] = s
   const find = (x: number): number => {
     while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x] }
     return x
   }
-  const overlap = (a: number, b: number) =>
-    lo[a][0] <= hi[b][0] && hi[a][0] >= lo[b][0] &&
-    lo[a][1] <= hi[b][1] && hi[a][1] >= lo[b][1] &&
-    lo[a][2] <= hi[b][2] && hi[a][2] >= lo[b][2]
+  const EPS = 1e-6
+  const contains = (outer: number, inner: number) =>
+    lo[outer][0] <= lo[inner][0] + EPS && hi[outer][0] >= hi[inner][0] - EPS &&
+    lo[outer][1] <= lo[inner][1] + EPS && hi[outer][1] >= hi[inner][1] - EPS &&
+    lo[outer][2] <= lo[inner][2] + EPS && hi[outer][2] >= hi[inner][2] - EPS
   for (let a = 0; a < shellCount; a++) {
     for (let b = a + 1; b < shellCount; b++) {
-      if (overlap(a, b)) parent[find(a)] = find(b)
+      if (contains(a, b) || contains(b, a)) parent[find(a)] = find(b)
     }
   }
 
