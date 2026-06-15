@@ -89,6 +89,17 @@ describe('clearanceColor', () => {
 })
 
 describe('offsetMesh (Minkowski)', () => {
+  it('returns null when cancelled at a stage boundary', async () => {
+    let cancelled = false
+    const mesh = await offsetMesh(makeCube(10), 0.5, 16, {
+      onStage: (_p, stage) => {
+        if (stage === 'Building surface') cancelled = true
+      },
+      shouldCancel: () => cancelled,
+    })
+    expect(mesh).toBeNull()
+  }, 20000)
+
   it('grows the bbox by ~clearance per side', async () => {
     const mesh = await offsetMesh(makeCube(10), 0.5, 16)
     expect(mesh).not.toBeNull()

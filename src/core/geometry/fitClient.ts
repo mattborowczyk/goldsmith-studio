@@ -55,10 +55,20 @@ class FitClient {
 
   private start<T>(req: FitRequestBody, transfer: Transferable[], onProgress?: FitProgress): FitJob<T> {
     const id = this.nextId++
+    // the executor runs synchronously, so rejectJob is set before the try below
+    let rejectJob!: (e: Error) => void
     const promise = new Promise<T | null>((resolve, reject) => {
+      rejectJob = reject
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, onProgress })
     })
-    this.getWorker().postMessage({ ...req, id }, transfer)
+    // a synchronous failure (worker spawn / postMessage) must still settle the job,
+    // or the caller's busy state hangs forever
+    try {
+      this.getWorker().postMessage({ ...req, id }, transfer)
+    } catch (err) {
+      this.pending.delete(id)
+      rejectJob(err instanceof Error ? err : new Error(String(err)))
+    }
     return { promise, cancel: () => this.worker?.postMessage({ id, op: 'cancel' } satisfies FitRequest) }
   }
 

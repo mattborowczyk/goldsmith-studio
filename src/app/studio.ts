@@ -1003,9 +1003,14 @@ export async function computeClearanceMap(): Promise<void> {
       return
     }
     eng.setClearanceMap(shellId, field.values, fitBand())
+    // setClearanceMap is a no-op if the shell part vanished mid-compute — only
+    // claim an active map when it actually painted
+    const painted = eng.hasClearanceMap()
     useAppStore.getState().patchFit({
       busy: false, progress: 1, stage: null,
-      mapEnabled: true, mapRange: { min: field.min, max: field.max }, mapPartId: shellId,
+      mapEnabled: painted,
+      mapRange: painted ? { min: field.min, max: field.max } : null,
+      mapPartId: painted ? shellId : null,
       scanPartId: scanId, shellPartId: shellId,
     })
   } catch (err) {

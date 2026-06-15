@@ -12,12 +12,23 @@ import { fillHoles, fixWinding, removeDegenerateTriangles, weldVertices } from '
  */
 
 let manifoldModule: ManifoldToplevel | null = null
+let manifoldModulePromise: Promise<ManifoldToplevel> | null = null
 async function getManifold(): Promise<ManifoldToplevel> {
-  if (!manifoldModule) {
-    manifoldModule = await Module()
-    manifoldModule.setup()
+  if (manifoldModule) return manifoldModule
+  // cache the in-flight init so two concurrent first-use jobs share one Module()
+  if (!manifoldModulePromise) {
+    manifoldModulePromise = Module()
+      .then((module) => {
+        module.setup()
+        manifoldModule = module
+        return module
+      })
+      .catch((err) => {
+        manifoldModulePromise = null // let a later call retry after a failed init
+        throw err
+      })
   }
-  return manifoldModule
+  return manifoldModulePromise
 }
 
 /** Coarse stage hooks so the worker can stream progress + observe cancel between stages. */
@@ -46,6 +57,7 @@ export async function offsetMesh(
     if (hooks.shouldCancel?.()) return null
     offset = scanMan.minkowskiSum(ball)
     hooks.onStage?.(0.95, 'Building surface')
+    if (hooks.shouldCancel?.()) return null
     return meshOf(offset)
   } finally {
     scanMan.delete()
@@ -80,6 +92,7 @@ export async function subtractMesh(
     if (hooks.shouldCancel?.()) return null
     result = shellMan.subtract(offset)
     hooks.onStage?.(0.95, 'Building surface')
+    if (hooks.shouldCancel?.()) return null
     return meshOf(result)
   } finally {
     scanMan.delete()
