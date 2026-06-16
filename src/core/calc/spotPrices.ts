@@ -66,6 +66,7 @@ export async function fetchSpotPricesPerGram(
   return out
 }
 
+/** USD→`currency` conversion rate from the ECB (frankfurter) feed; throws on a missing rate. */
 async function fetchUsdRate(currency: Currency): Promise<number> {
   const res = await fetch(`https://api.frankfurter.dev/v1/latest?base=USD&symbols=${currency}`, {
     signal: timeoutSignal(REQUEST_TIMEOUT_MS),
