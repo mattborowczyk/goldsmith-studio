@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { makeCube } from '../geometry/testFixtures'
 import { exportPLY } from './exporters'
-import { importFile, isSupportedFile } from './importers'
+import { importFile, isSupportedFile, scaleMeshData } from './importers'
+import type { MeshData } from '../types'
 
 describe('isSupportedFile', () => {
   it('accepts the v1.5 formats and rejects others', () => {
@@ -36,5 +37,34 @@ describe('PLY import', () => {
     // colour channel survives the round trip: red rises from first to last vertex
     const n = part.data.positions.length / 3
     expect(part.colors![0]).toBeLessThan(part.colors![(n - 1) * 3])
+  })
+})
+
+describe('scaleMeshData', () => {
+  const sample = (): MeshData => ({
+    positions: new Float32Array([1, 2, 3, 4, 5, 6]),
+    indices: new Uint32Array([0, 1, 2]),
+  })
+
+  it('scales positions by the factor', () => {
+    const out = scaleMeshData(sample(), 10)
+    expect(Array.from(out.positions)).toEqual([10, 20, 30, 40, 50, 60])
+  })
+
+  it('does not mutate the input (pure transform)', () => {
+    const input = sample()
+    const out = scaleMeshData(input, 25.4)
+    expect(Array.from(input.positions)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(out.positions).not.toBe(input.positions)
+    expect(out.indices).not.toBe(input.indices)
+  })
+
+  it('returns a fresh copy even when factor is 1', () => {
+    const input = sample()
+    const out = scaleMeshData(input, 1)
+    expect(Array.from(out.positions)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(out.positions).not.toBe(input.positions)
+    expect(Array.from(out.indices)).toEqual([0, 1, 2])
+    expect(out.indices).not.toBe(input.indices)
   })
 })

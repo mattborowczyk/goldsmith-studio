@@ -130,10 +130,13 @@ function indexSequential(geo: THREE.BufferGeometry): THREE.BufferGeometry {
   return geo
 }
 
-/** Scale mesh positions in place by a uniform factor (unit conversion). */
+/**
+ * A uniformly scaled copy of the mesh (unit conversion). Never mutates the
+ * input — returns a fresh MeshData so callers can own the result, mirroring
+ * `scaleMeshDataCopy` in exporters.ts.
+ */
 export function scaleMeshData(data: MeshData, factor: number): MeshData {
-  if (factor === 1) return data
-  const positions = data.positions
-  for (let i = 0; i < positions.length; i++) positions[i] *= factor
-  return data
+  const positions = new Float32Array(data.positions.length)
+  for (let i = 0; i < data.positions.length; i++) positions[i] = data.positions[i] * factor
+  return { positions, indices: data.indices.slice() }
 }
