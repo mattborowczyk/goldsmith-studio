@@ -506,7 +506,7 @@ async function initCostData() {
     let materials = await loadMaterials()
     if (materials.length === 0) {
       materials = defaultMaterials()
-      await saveMaterials(materials)
+      await guardWrite(saveMaterials(materials))
     } else {
       // IndexedDB getAll returns key order — restore library order, customs last
       const rank = new Map(defaultMaterials().map((m, i) => [m.id, i]))
@@ -615,7 +615,7 @@ export async function refreshMarketPrices(): Promise<void> {
     const perGram = await fetchSpotPricesPerGram(store.cost.settings.currency)
     const materials = applySpotPrices(useAppStore.getState().cost.materials, perGram)
     useAppStore.getState().patchCost({ materials, refreshing: false })
-    await saveMaterials(materials)
+    await guardWrite(saveMaterials(materials))
     updateCostSettings({ pricesUpdatedAt: new Date().toISOString() })
   } catch (err) {
     useAppStore.getState().patchCost({

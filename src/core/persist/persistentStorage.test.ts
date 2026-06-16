@@ -3,13 +3,12 @@ import { requestPersistentStorage } from './db'
 
 /** Swap navigator.storage for the duration of one assertion. */
 function withStorage(storage: unknown, fn: () => Promise<void>) {
-  const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
-  Object.defineProperty(globalThis.navigator, 'storage', {
-    value: storage,
-    configurable: true,
-  })
+  const nav = globalThis.navigator as { storage?: unknown }
+  const originalStorage = Object.getOwnPropertyDescriptor(nav, 'storage')
+  Object.defineProperty(nav, 'storage', { value: storage, configurable: true })
   return fn().finally(() => {
-    if (original) Object.defineProperty(globalThis, 'navigator', original)
+    if (originalStorage) Object.defineProperty(nav, 'storage', originalStorage)
+    else delete nav.storage
   })
 }
 

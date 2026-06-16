@@ -62,10 +62,11 @@ function getDB() {
  * can tell "denied" from "can't ask".
  */
 export async function requestPersistentStorage(): Promise<boolean | null> {
-  if (!navigator.storage?.persist) return null
+  const storage = globalThis.navigator?.storage
+  if (!storage?.persist) return null
   try {
-    if (await navigator.storage.persisted?.()) return true
-    return await navigator.storage.persist()
+    if (storage.persisted && (await storage.persisted())) return true
+    return await storage.persist()
   } catch {
     return null
   }
