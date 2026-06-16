@@ -64,5 +64,7 @@ describe('scaleMeshData', () => {
     const out = scaleMeshData(input, 1)
     expect(Array.from(out.positions)).toEqual([1, 2, 3, 4, 5, 6])
     expect(out.positions).not.toBe(input.positions)
+    expect(Array.from(out.indices)).toEqual([0, 1, 2])
+    expect(out.indices).not.toBe(input.indices)
   })
 })
