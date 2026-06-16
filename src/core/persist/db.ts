@@ -72,6 +72,42 @@ export async function requestPersistentStorage(): Promise<boolean | null> {
   }
 }
 
+/** Approximate on-device usage and quota in bytes (issue #32). */
+export interface StorageEstimate {
+  usage: number
+  quota: number
+}
+
+/** Usage ratio at which we start warning the user that storage is filling up. */
+export const STORAGE_WARN_RATIO = 0.8
+
+/**
+ * Best-effort read of how much of the origin's storage budget is in use, via
+ * `navigator.storage.estimate()`. Figures are approximate (browsers pad them).
+ * Returns null where the API is unsupported, or when it yields unusable numbers,
+ * so callers can distinguish "no data" from a real reading.
+ */
+export async function estimateStorage(): Promise<StorageEstimate | null> {
+  const storage = globalThis.navigator?.storage
+  if (!storage?.estimate) return null
+  try {
+    const { usage, quota } = await storage.estimate()
+    if (
+      typeof usage !== 'number' ||
+      typeof quota !== 'number' ||
+      !Number.isFinite(usage) ||
+      !Number.isFinite(quota) ||
+      usage < 0 ||
+      quota <= 0
+    ) {
+      return null
+    }
+    return { usage, quota }
+  } catch {
+    return null
+  }
+}
+
 export async function saveScene(parts: SavedPart[]): Promise<void> {
   const db = await getDB()
   const tx = db.transaction('parts', 'readwrite')

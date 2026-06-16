@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { requestPersistentStorage } from './db'
+import { estimateStorage, requestPersistentStorage } from './db'
 
 /** Swap navigator.storage for the duration of one assertion. */
 function withStorage(storage: unknown, fn: () => Promise<void>) {
@@ -54,5 +54,51 @@ describe('requestPersistentStorage', () => {
         expect(await requestPersistentStorage()).toBeNull()
       },
     )
+  })
+})
+
+describe('estimateStorage', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('returns null when the StorageManager API is unavailable', async () => {
+    await withStorage({}, async () => {
+      expect(await estimateStorage()).toBeNull()
+    })
+  })
+
+  it('returns usage/quota when the browser reports them', async () => {
+    await withStorage(
+      { estimate: () => Promise.resolve({ usage: 1_200_000_000, quota: 4_000_000_000 }) },
+      async () => {
+        expect(await estimateStorage()).toEqual({ usage: 1_200_000_000, quota: 4_000_000_000 })
+      },
+    )
+  })
+
+  it('returns null for an unusable (zero/undefined quota) reading', async () => {
+    await withStorage({ estimate: () => Promise.resolve({ usage: 0, quota: 0 }) }, async () => {
+      expect(await estimateStorage()).toBeNull()
+    })
+    await withStorage({ estimate: () => Promise.resolve({ usage: 5 }) }, async () => {
+      expect(await estimateStorage()).toBeNull()
+    })
+    await withStorage(
+      { estimate: () => Promise.resolve({ usage: -1, quota: 4_000_000_000 }) },
+      async () => {
+        expect(await estimateStorage()).toBeNull()
+      },
+    )
+    await withStorage(
+      { estimate: () => Promise.resolve({ usage: NaN, quota: Infinity }) },
+      async () => {
+        expect(await estimateStorage()).toBeNull()
+      },
+    )
+  })
+
+  it('swallows a throwing StorageManager and returns null', async () => {
+    await withStorage({ estimate: () => Promise.reject(new Error('boom')) }, async () => {
+      expect(await estimateStorage()).toBeNull()
+    })
   })
 })

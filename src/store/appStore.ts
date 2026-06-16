@@ -210,6 +210,10 @@ export interface StorageState {
   writeFailed: boolean
   /** The last failure looked like a quota/out-of-space error (drives the message). */
   quotaExceeded: boolean
+  /** navigator.storage.persisted(): true granted, false denied, null can't-ask. */
+  persisted: boolean | null
+  /** Latest approximate usage/quota in bytes (issue #32), or null if unavailable. */
+  estimate: { usage: number; quota: number } | null
 }
 
 interface AppState {
@@ -388,6 +392,8 @@ export const useAppStore = create<AppState>((set) => ({
   storage: {
     writeFailed: false,
     quotaExceeded: false,
+    persisted: null,
+    estimate: null,
   },
 
   setTab: (tab) => set({ tab }),

@@ -9,6 +9,7 @@ import {
   clearHistoryStore,
   deleteHistoryEntry,
   dumpDatabase,
+  estimateStorage,
   kvGet,
   kvSet,
   loadHistory,
@@ -363,6 +364,19 @@ async function persistScene() {
     })
   })
   await guardWrite(saveScene(parts))
+  // Scenes are the heavy writes (multi-MB scans), so refresh the usage readout
+  // once the scene has persisted (issue #32).
+  void refreshStorageEstimate()
+}
+
+/**
+ * Pull a fresh storage estimate into the store so the usage readout / proactive
+ * near-quota warning stay current. Best-effort: a null estimate just leaves the
+ * readout hidden.
+ */
+export async function refreshStorageEstimate(): Promise<void> {
+  const estimate = await estimateStorage()
+  useAppStore.getState().patchStorage({ estimate })
 }
 
 export function persistDisplaySettings() {
@@ -380,10 +394,15 @@ export function persistDisplaySettings() {
 async function restoreSession() {
   const store = useAppStore.getState()
   // Ask once for durable storage so WebKit can't silently evict the scene under
-  // storage pressure. Fire-and-forget: the result only matters for diagnostics.
+  // storage pressure. Surface the grant state for the storage readout (issue #32).
   void requestPersistentStorage().then((granted) => {
     if (import.meta.env.DEV) console.info('Persistent storage:', granted)
+    useAppStore.getState().patchStorage({ persisted: granted })
+    // Re-read once the grant lands: persistence can change the effective quota.
+    void refreshStorageEstimate()
   })
+  // Eager first read so the readout appears even if the grant request is slow.
+  void refreshStorageEstimate()
   try {
     const [parts, settings] = await Promise.all([loadScene(), loadSettings()])
     if (!engine) return
