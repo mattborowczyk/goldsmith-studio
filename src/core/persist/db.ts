@@ -55,6 +55,22 @@ function getDB() {
   return dbPromise
 }
 
+/**
+ * Ask the browser to keep our IndexedDB data from being evicted under storage
+ * pressure (WebKit/iPad evicts non-persistent origins silently). Idempotent:
+ * returns true if already persistent. Returns null where unsupported so callers
+ * can tell "denied" from "can't ask".
+ */
+export async function requestPersistentStorage(): Promise<boolean | null> {
+  if (!navigator.storage?.persist) return null
+  try {
+    if (await navigator.storage.persisted?.()) return true
+    return await navigator.storage.persist()
+  } catch {
+    return null
+  }
+}
+
 export async function saveScene(parts: SavedPart[]): Promise<void> {
   const db = await getDB()
   const tx = db.transaction('parts', 'readwrite')

@@ -204,6 +204,14 @@ export interface PwaState {
   canInstall: boolean
 }
 
+/** On-device durability: surfaces silent autosave/quota failures (issue #10). */
+export interface StorageState {
+  /** A persistence write (scene/materials/settings/kv) failed — work may be unsaved. */
+  writeFailed: boolean
+  /** The last failure looked like a quota/out-of-space error (drives the message). */
+  quotaExceeded: boolean
+}
+
 interface AppState {
   tab: WorkflowTab
   parts: PartInfo[]
@@ -227,6 +235,7 @@ interface AppState {
   fit: FitState
   deliver: DeliverState
   pwa: PwaState
+  storage: StorageState
 
   setTab: (tab: WorkflowTab) => void
   setParts: (parts: PartInfo[]) => void
@@ -250,6 +259,7 @@ interface AppState {
   patchFit: (patch: Partial<FitState>) => void
   patchDeliver: (patch: Partial<DeliverState>) => void
   patchPwa: (patch: Partial<PwaState>) => void
+  patchStorage: (patch: Partial<StorageState>) => void
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -375,6 +385,10 @@ export const useAppStore = create<AppState>((set) => ({
     offlineReady: false,
     canInstall: false,
   },
+  storage: {
+    writeFailed: false,
+    quotaExceeded: false,
+  },
 
   setTab: (tab) => set({ tab }),
   setParts: (parts) => set({ parts }),
@@ -400,4 +414,5 @@ export const useAppStore = create<AppState>((set) => ({
   patchFit: (patch) => set((s) => ({ fit: { ...s.fit, ...patch } })),
   patchDeliver: (patch) => set((s) => ({ deliver: { ...s.deliver, ...patch } })),
   patchPwa: (patch) => set((s) => ({ pwa: { ...s.pwa, ...patch } })),
+  patchStorage: (patch) => set((s) => ({ storage: { ...s.storage, ...patch } })),
 }))
