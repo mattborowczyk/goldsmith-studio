@@ -9,17 +9,18 @@ afterEach(() => {
 describe('market-price fetch timeouts', () => {
   it('caps each request with an 8s abort signal', async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({
-      ok: true,
-      json: async () => ({ price: 6000 }),
-    }))
-    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json: async () => ({ price: 6000 }) })),
+    )
 
     // USD avoids the FX hop, so every call is a spot-price request.
     await fetchSpotPricesPerGram('USD')
 
     expect(timeoutSpy).toHaveBeenCalledWith(8000)
-    for (const [, init] of fetchMock.mock.calls) {
+    const calls = vi.mocked(fetch).mock.calls
+    expect(calls.length).toBeGreaterThan(0)
+    for (const [, init] of calls) {
       expect(init?.signal).toBeInstanceOf(AbortSignal)
     }
   })
