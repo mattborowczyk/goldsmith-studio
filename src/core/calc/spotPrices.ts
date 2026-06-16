@@ -19,6 +19,24 @@ const SYMBOL: Record<SpotMetal, string> = {
 const TROY_OUNCE_GRAMS = 31.1034768
 
 /**
+ * Bench networks (iPad on captive-portal Wi-Fi) stall silently. Cap each request
+ * so a hung socket rejects instead of leaving the "Refresh from market" spinner
+ * spinning forever — callers then fall back to the last saved prices.
+ */
+const REQUEST_TIMEOUT_MS = 8000
+
+/**
+ * AbortSignal that fires after `ms`. Prefers the native `AbortSignal.timeout`,
+ * falling back to a manual controller for Safari versions that lack it.
+ */
+function timeoutSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(ms)
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(), ms)
+  return controller.signal
+}
+
+/**
  * Pure-metal spot prices per gram in `currency`. Metals that fail individually
  * are omitted; throws only when nothing could be fetched.
  */
@@ -29,7 +47,9 @@ export async function fetchSpotPricesPerGram(
   const metals = Object.keys(SYMBOL) as SpotMetal[]
   const results = await Promise.allSettled(
     metals.map(async (metal) => {
-      const res = await fetch(`https://api.gold-api.com/price/${SYMBOL[metal]}`)
+      const res = await fetch(`https://api.gold-api.com/price/${SYMBOL[metal]}`, {
+        signal: timeoutSignal(REQUEST_TIMEOUT_MS),
+      })
       if (!res.ok) throw new Error(`${SYMBOL[metal]}: HTTP ${res.status}`)
       const json = (await res.json()) as { price: number }
       if (typeof json.price !== 'number' || !(json.price > 0)) {
@@ -46,8 +66,11 @@ export async function fetchSpotPricesPerGram(
   return out
 }
 
+/** USD→`currency` conversion rate from the ECB (frankfurter) feed; throws on a missing rate. */
 async function fetchUsdRate(currency: Currency): Promise<number> {
-  const res = await fetch(`https://api.frankfurter.dev/v1/latest?base=USD&symbols=${currency}`)
+  const res = await fetch(`https://api.frankfurter.dev/v1/latest?base=USD&symbols=${currency}`, {
+    signal: timeoutSignal(REQUEST_TIMEOUT_MS),
+  })
   if (!res.ok) throw new Error(`FX rates: HTTP ${res.status}`)
   const json = (await res.json()) as { rates?: Record<string, number> }
   const rate = json.rates?.[currency]
