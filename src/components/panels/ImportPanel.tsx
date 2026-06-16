@@ -7,6 +7,7 @@ import type { ImportUnit } from '@/core/types'
 import { useAppStore } from '@/store/appStore'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
+import { StorageMeter } from '@/components/StorageMeter'
 import { cn } from '@/lib/utils'
 
 const SHARE_SUPPORTED = canShareFiles([
@@ -187,6 +188,9 @@ export function ImportPanel() {
           </p>
         )}
       </div>
+
+      {/* On-device storage usage / quota (issue #32) */}
+      <StorageMeter />
 
       {/* Accent theming (§2.8): swap the warm-metal hue, dark studio stays default */}
       <div className="flex flex-col gap-2 border-t border-border/60 pt-4">
