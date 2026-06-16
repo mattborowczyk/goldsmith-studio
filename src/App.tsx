@@ -12,6 +12,7 @@ import { CostPanel } from '@/components/panels/CostPanel'
 import { DeliverPanel } from '@/components/panels/DeliverPanel'
 import { PwaBanner } from '@/components/PwaBanner'
 import { StorageBanner } from '@/components/StorageBanner'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { useAppStore } from '@/store/appStore'
 
 const TAB_TITLES: Record<string, string> = {
@@ -39,14 +40,19 @@ export default function App() {
         <h2 className="mb-4 text-sm font-semibold tracking-wide text-primary">
           {TAB_TITLES[tab] ?? tab}
         </h2>
-        {tab === 'import' && <ImportPanel />}
-        {tab === 'repair' && <RepairPanel />}
-        {tab === 'measure' && <MeasurePanel />}
-        {tab === 'build' && <BuildPanel />}
-        {tab === 'resize' && <ResizePanel />}
-        {tab === 'fit' && <FitPanel />}
-        {tab === 'cost' && <CostPanel />}
-        {tab === 'deliver' && <DeliverPanel />}
+        {/* A panel crash is isolated here: the Viewport and chrome stay alive and
+            the fallback offers a re-mount. Keyed by tab so each tab gets its own
+            boundary and switching tabs clears a stale error. */}
+        <ErrorBoundary key={tab} label="panel">
+          {tab === 'import' && <ImportPanel />}
+          {tab === 'repair' && <RepairPanel />}
+          {tab === 'measure' && <MeasurePanel />}
+          {tab === 'build' && <BuildPanel />}
+          {tab === 'resize' && <ResizePanel />}
+          {tab === 'fit' && <FitPanel />}
+          {tab === 'cost' && <CostPanel />}
+          {tab === 'deliver' && <DeliverPanel />}
+        </ErrorBoundary>
       </aside>
 
       <StorageBanner />
