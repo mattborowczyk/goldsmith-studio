@@ -15,6 +15,7 @@ import {
   loadMaterials,
   loadScene,
   loadSettings,
+  requestPersistentStorage,
   restoreDatabase,
   saveMaterials,
   saveScene,
@@ -303,6 +304,40 @@ function updateRepairUndoFlag(id: string | null) {
 
 // ---------- persistence ----------
 
+/** A QuotaExceededError under any of the names browsers use for it. */
+function isQuotaError(err: unknown): boolean {
+  if (err instanceof DOMException) {
+    return err.name === 'QuotaExceededError' || err.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+  }
+  return false
+}
+
+/**
+ * Surface a persistence write failure on the storage banner instead of letting it
+ * vanish into a console.warn — a swallowed QuotaExceededError means the user thinks
+ * their work is saved when it isn't (issue #10).
+ */
+function reportWriteFailure(err: unknown) {
+  console.warn('Persistence write failed', err)
+  useAppStore.getState().patchStorage({ writeFailed: true, quotaExceeded: isQuotaError(err) })
+}
+
+/**
+ * Run a fire-and-forget persistence write, routing any failure to the storage
+ * banner. A subsequent success clears a previously-raised flag so the warning
+ * doesn't linger once the write path recovers.
+ */
+function guardWrite(write: Promise<unknown>): Promise<void> {
+  return write.then(
+    () => {
+      if (useAppStore.getState().storage.writeFailed) {
+        useAppStore.getState().patchStorage({ writeFailed: false, quotaExceeded: false })
+      }
+    },
+    reportWriteFailure,
+  )
+}
+
 function scheduleAutosave() {
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => void persistScene(), 1500)
@@ -327,25 +362,28 @@ async function persistScene() {
       colors: saved.colors,
     })
   })
-  try {
-    await saveScene(parts)
-  } catch (err) {
-    console.warn('Autosave failed', err)
-  }
+  await guardWrite(saveScene(parts))
 }
 
 export function persistDisplaySettings() {
   const s = useAppStore.getState()
-  void saveSettings({
-    displayMode: s.displayMode,
-    background: s.background,
-    gridVisible: s.gridVisible,
-    accent: s.accent,
-  })
+  void guardWrite(
+    saveSettings({
+      displayMode: s.displayMode,
+      background: s.background,
+      gridVisible: s.gridVisible,
+      accent: s.accent,
+    }),
+  )
 }
 
 async function restoreSession() {
   const store = useAppStore.getState()
+  // Ask once for durable storage so WebKit can't silently evict the scene under
+  // storage pressure. Fire-and-forget: the result only matters for diagnostics.
+  void requestPersistentStorage().then((granted) => {
+    if (import.meta.env.DEV) console.info('Persistent storage:', granted)
+  })
   try {
     const [parts, settings] = await Promise.all([loadScene(), loadSettings()])
     if (!engine) return
@@ -468,7 +506,7 @@ async function initCostData() {
     let materials = await loadMaterials()
     if (materials.length === 0) {
       materials = defaultMaterials()
-      await saveMaterials(materials)
+      await guardWrite(saveMaterials(materials))
     } else {
       // IndexedDB getAll returns key order — restore library order, customs last
       const rank = new Map(defaultMaterials().map((m, i) => [m.id, i]))
@@ -516,21 +554,21 @@ export function setPartMaterial(partId: string, materialId: string) {
   if (materialId) assignments[partId] = materialId
   else delete assignments[partId]
   store.patchCost({ assignments })
-  void kvSet(KV_ASSIGNMENTS, assignments)
+  void guardWrite(kvSet(KV_ASSIGNMENTS, assignments))
 }
 
 export function updateCostSettings(patch: Partial<CostSettings>) {
   const store = useAppStore.getState()
   const settings = { ...store.cost.settings, ...patch }
   store.patchCost({ settings })
-  void kvSet(KV_COST_SETTINGS, settings)
+  void guardWrite(kvSet(KV_COST_SETTINGS, settings))
 }
 
 export function updateMaterial(id: string, patch: Partial<Material>) {
   const store = useAppStore.getState()
   const materials = store.cost.materials.map((m) => (m.id === id ? { ...m, ...patch } : m))
   store.patchCost({ materials })
-  void saveMaterials(materials)
+  void guardWrite(saveMaterials(materials))
 }
 
 export function addCustomMaterial() {
@@ -545,7 +583,7 @@ export function addCustomMaterial() {
   }
   const materials = [...store.cost.materials, custom]
   store.patchCost({ materials })
-  void saveMaterials(materials)
+  void guardWrite(saveMaterials(materials))
 }
 
 export function deleteMaterial(id: string) {
@@ -557,8 +595,8 @@ export function deleteMaterial(id: string) {
     Object.entries(store.cost.assignments).filter(([, matId]) => matId !== id),
   )
   store.patchCost({ materials, assignments })
-  void saveMaterials(materials)
-  void kvSet(KV_ASSIGNMENTS, assignments)
+  void guardWrite(saveMaterials(materials))
+  void guardWrite(kvSet(KV_ASSIGNMENTS, assignments))
 }
 
 /** Restore built-in densities/names; keeps custom materials and all prices at 0. */
@@ -567,7 +605,7 @@ export function resetMaterialLibrary() {
   const custom = store.cost.materials.filter((m) => !m.builtin)
   const materials = [...defaultMaterials(), ...custom]
   store.patchCost({ materials })
-  void saveMaterials(materials)
+  void guardWrite(saveMaterials(materials))
 }
 
 export async function refreshMarketPrices(): Promise<void> {
@@ -577,7 +615,7 @@ export async function refreshMarketPrices(): Promise<void> {
     const perGram = await fetchSpotPricesPerGram(store.cost.settings.currency)
     const materials = applySpotPrices(useAppStore.getState().cost.materials, perGram)
     useAppStore.getState().patchCost({ materials, refreshing: false })
-    await saveMaterials(materials)
+    await guardWrite(saveMaterials(materials))
     updateCostSettings({ pricesUpdatedAt: new Date().toISOString() })
   } catch (err) {
     useAppStore.getState().patchCost({
@@ -672,7 +710,7 @@ function handlePointPicked(point: Vec3) {
   engine?.addMeasurement(m)
   const measurements = [...store.measure.measurements, m]
   store.patchMeasure({ pendingPoint: null, measurements })
-  void kvSet(KV_MEASUREMENTS, measurements)
+  void guardWrite(kvSet(KV_MEASUREMENTS, measurements))
 }
 
 export function setMeasurePicking(on: boolean) {
@@ -687,7 +725,7 @@ export function setMeasurePicking(on: boolean) {
 
 export function setMeasureColor(color: string) {
   useAppStore.getState().patchMeasure({ color })
-  void kvSet(KV_MEASURE_COLOR, color)
+  void guardWrite(kvSet(KV_MEASURE_COLOR, color))
 }
 
 export function removeMeasurementById(id: string) {
@@ -695,7 +733,7 @@ export function removeMeasurementById(id: string) {
   getEngine().removeMeasurement(id)
   const measurements = store.measure.measurements.filter((m) => m.id !== id)
   store.patchMeasure({ measurements })
-  void kvSet(KV_MEASUREMENTS, measurements)
+  void guardWrite(kvSet(KV_MEASUREMENTS, measurements))
 }
 
 export function undoLastMeasurement() {
@@ -706,7 +744,7 @@ export function undoLastMeasurement() {
 export function clearAllMeasurements() {
   getEngine().clearMeasurements()
   useAppStore.getState().patchMeasure({ measurements: [], pendingPoint: null })
-  void kvSet(KV_MEASUREMENTS, [])
+  void guardWrite(kvSet(KV_MEASUREMENTS, []))
 }
 
 async function restoreMeasurements() {
@@ -1750,7 +1788,7 @@ function persistReportPrefs() {
     applyShrinkage: d.applyShrinkage,
     shrinkagePct: d.shrinkagePct,
   }
-  void kvSet(KV_REPORT_PREFS, prefs)
+  void guardWrite(kvSet(KV_REPORT_PREFS, prefs))
 }
 
 /** Patch the deliver slice; durable prefs are written through to IndexedDB. */
@@ -1776,7 +1814,7 @@ export function setBranding(patch: Partial<ReportBranding>) {
         : current.logo,
   }
   useAppStore.getState().patchDeliver({ branding })
-  void kvSet(KV_BRANDING, branding)
+  void guardWrite(kvSet(KV_BRANDING, branding))
 }
 
 /** Read an uploaded logo file as a data-URL and store it in branding. */

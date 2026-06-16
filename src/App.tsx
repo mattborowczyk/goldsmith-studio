@@ -11,6 +11,7 @@ import { FitPanel } from '@/components/panels/FitPanel'
 import { CostPanel } from '@/components/panels/CostPanel'
 import { DeliverPanel } from '@/components/panels/DeliverPanel'
 import { PwaBanner } from '@/components/PwaBanner'
+import { StorageBanner } from '@/components/StorageBanner'
 import { useAppStore } from '@/store/appStore'
 
 const TAB_TITLES: Record<string, string> = {
@@ -48,6 +49,7 @@ export default function App() {
         {tab === 'deliver' && <DeliverPanel />}
       </aside>
 
+      <StorageBanner />
       <PwaBanner />
     </div>
   )
