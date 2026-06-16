@@ -82,6 +82,18 @@ describe('estimateStorage', () => {
     await withStorage({ estimate: () => Promise.resolve({ usage: 5 }) }, async () => {
       expect(await estimateStorage()).toBeNull()
     })
+    await withStorage(
+      { estimate: () => Promise.resolve({ usage: -1, quota: 4_000_000_000 }) },
+      async () => {
+        expect(await estimateStorage()).toBeNull()
+      },
+    )
+    await withStorage(
+      { estimate: () => Promise.resolve({ usage: NaN, quota: Infinity }) },
+      async () => {
+        expect(await estimateStorage()).toBeNull()
+      },
+    )
   })
 
   it('swallows a throwing StorageManager and returns null', async () => {

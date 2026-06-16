@@ -398,7 +398,10 @@ async function restoreSession() {
   void requestPersistentStorage().then((granted) => {
     if (import.meta.env.DEV) console.info('Persistent storage:', granted)
     useAppStore.getState().patchStorage({ persisted: granted })
+    // Re-read once the grant lands: persistence can change the effective quota.
+    void refreshStorageEstimate()
   })
+  // Eager first read so the readout appears even if the grant request is slow.
   void refreshStorageEstimate()
   try {
     const [parts, settings] = await Promise.all([loadScene(), loadSettings()])

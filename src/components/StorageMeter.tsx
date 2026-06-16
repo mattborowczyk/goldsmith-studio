@@ -1,10 +1,8 @@
 import { HardDrive, Shield, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
+import { STORAGE_WARN_RATIO } from '@/core/persist/db'
 import { formatBytes } from '@/lib/format'
 import { cn } from '@/lib/utils'
-
-/** Usage ratio at which we start warning the user (issue #32). */
-export const STORAGE_WARN_RATIO = 0.8
 
 /**
  * Proactive on-device storage readout (issue #32): how much of the origin's

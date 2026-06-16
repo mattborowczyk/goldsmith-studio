@@ -11,6 +11,11 @@ describe('formatBytes', () => {
     expect(formatBytes(1_234_000_000)).toBe('1.2 GB')
   })
 
+  it('promotes to the next unit when rounding tips over', () => {
+    // 999.95 KB rounds to 1000.0 KB → should read as 1 MB, not "1000 KB"
+    expect(formatBytes(999_950)).toBe('1 MB')
+  })
+
   it('returns a dash for unusable input', () => {
     expect(formatBytes(-1)).toBe('—')
     expect(formatBytes(NaN)).toBe('—')

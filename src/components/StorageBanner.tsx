@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
 import { Button } from '@/components/ui/button'
-import { STORAGE_WARN_RATIO } from '@/components/StorageMeter'
+import { STORAGE_WARN_RATIO } from '@/core/persist/db'
 
 /**
  * Storage warnings, bottom-left. Two distinct cases:

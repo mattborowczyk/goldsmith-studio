@@ -78,6 +78,9 @@ export interface StorageEstimate {
   quota: number
 }
 
+/** Usage ratio at which we start warning the user that storage is filling up. */
+export const STORAGE_WARN_RATIO = 0.8
+
 /**
  * Best-effort read of how much of the origin's storage budget is in use, via
  * `navigator.storage.estimate()`. Figures are approximate (browsers pad them).
@@ -89,7 +92,16 @@ export async function estimateStorage(): Promise<StorageEstimate | null> {
   if (!storage?.estimate) return null
   try {
     const { usage, quota } = await storage.estimate()
-    if (typeof usage !== 'number' || typeof quota !== 'number' || !(quota > 0)) return null
+    if (
+      typeof usage !== 'number' ||
+      typeof quota !== 'number' ||
+      !Number.isFinite(usage) ||
+      !Number.isFinite(quota) ||
+      usage < 0 ||
+      quota <= 0
+    ) {
+      return null
+    }
     return { usage, quota }
   } catch {
     return null

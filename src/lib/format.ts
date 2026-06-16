@@ -12,6 +12,11 @@ export function formatBytes(bytes: number): string {
     value /= 1000
     i++
   }
-  const rounded = i === 0 ? Math.round(value) : parseFloat(value.toFixed(1))
+  let rounded = i === 0 ? Math.round(value) : parseFloat(value.toFixed(1))
+  // Rounding can tip a value up to the next unit (999.95 KB → "1 MB", not "1000 KB").
+  if (rounded >= 1000 && i < units.length - 1) {
+    rounded = 1
+    i++
+  }
   return `${rounded} ${units[i]}`
 }
