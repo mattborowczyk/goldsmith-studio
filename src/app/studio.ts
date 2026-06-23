@@ -94,6 +94,28 @@ let surveyDebounce: ReturnType<typeof setTimeout> | null = null
 /** Facet count of the Minkowski offset ball — coarse: a thin uniform gap needs no smooth sphere. */
 const FIT_SPHERE_SEGMENTS = 16
 
+// ---------- testability seams (issue #18) ----------
+// The controller's hard dependencies — the WebGL/Three engine and the three
+// worker-backed job clients — are reached through swappable references so the
+// orchestration (job supersede/cancel, teardown, undo stacks, reconcile) can run
+// under vitest against fakes. Production wiring is untouched: `clients` defaults
+// to the real facades and `createEngine` to `new SceneManager`.
+
+/** The worker-job facades the controller calls, narrowed to what it uses. */
+interface StudioClients {
+  fit: Pick<
+    typeof fitClient,
+    'offset' | 'subtract' | 'clearance' | 'survey' | 'bestAxis' | 'blockout' | 'shell'
+  >
+  thickness: Pick<typeof thicknessClient, 'compute'>
+  repair: Pick<typeof repairClient, 'analyze' | 'heal' | 'split'>
+}
+const realClients: StudioClients = { fit: fitClient, thickness: thicknessClient, repair: repairClient }
+let clients: StudioClients = realClients
+
+/** How `initEngine` constructs the engine — swapped for a fake SceneManager in tests. */
+let createEngine: (container: HTMLElement) => SceneManager = (container) => new SceneManager(container)
+
 export function getEngine(): SceneManager {
   if (!engine) throw new Error('Engine not initialized')
   return engine
@@ -101,7 +123,7 @@ export function getEngine(): SceneManager {
 
 export function initEngine(container: HTMLElement): SceneManager {
   if (engine) return engine
-  engine = new SceneManager(container)
+  engine = createEngine(container)
   if (import.meta.env.DEV) {
     const w = window as unknown as Record<string, unknown>
     w.__engine = engine
@@ -109,32 +131,7 @@ export function initEngine(container: HTMLElement): SceneManager {
   }
   const store = useAppStore.getState()
 
-  engine.on('partsChanged', () => {
-    const s = useAppStore.getState()
-    s.setParts(engine!.listParts())
-    // the engine drops its heatmap when the painted part is removed/replaced;
-    // reconcile the store so the Measure panel doesn't show a stale overlay
-    if (s.measure.heatmap.enabled && !engine!.hasThicknessHeatmap()) {
-      s.patchHeatmap({ enabled: false, busy: false, progress: 0, range: null, partId: null, error: null })
-    }
-    // same reconcile for the clearance map (e.g. its shell part was removed/replaced)
-    if (s.fit.mapEnabled && !engine!.hasClearanceMap()) {
-      s.patchFit({ mapEnabled: false, mapRange: null, mapPartId: null })
-    }
-    // and for the undercut survey (its scan part removed/replaced → drop the gizmo too)
-    if (s.fit.surveyEnabled && !engine!.hasUndercutSurvey()) {
-      // a drag-scheduled recompute must not fire against the now-gone scan
-      if (surveyDebounce) { clearTimeout(surveyDebounce); surveyDebounce = null }
-      engine!.hideInsertionAxis()
-      s.patchFit({ surveyEnabled: false, undercutArea: null, surveyPartId: null })
-    }
-    // and for the brush-select (its scan part removed/replaced → disarm + drop the overlay)
-    if (s.fit.brushActive && !engine!.hasBrushSelect()) {
-      s.patchFit({ brushActive: false, brushCount: 0 })
-    }
-    scheduleAutosave()
-    if (s.tab === 'cost') scheduleVolumeRecompute()
-  })
+  engine.on('partsChanged', handlePartsChanged)
   engine.on('selectionChanged', (id) => {
     useAppStore.getState().setSelected(id)
     updateRepairUndoFlag(id)
@@ -154,6 +151,41 @@ export function initEngine(container: HTMLElement): SceneManager {
 export function disposeEngine() {
   engine?.dispose()
   engine = null
+}
+
+/**
+ * Reconcile the store after the engine's part set changes: the engine drops any
+ * overlay whose part was removed/replaced, so the panels' enabled flags must
+ * follow or they'd show a stale heatmap/clearance-map/survey/brush. Wired by
+ * initEngine on the engine's `partsChanged` event.
+ */
+function handlePartsChanged() {
+  const eng = engine
+  if (!eng) return
+  const s = useAppStore.getState()
+  s.setParts(eng.listParts())
+  // the engine drops its heatmap when the painted part is removed/replaced;
+  // reconcile the store so the Measure panel doesn't show a stale overlay
+  if (s.measure.heatmap.enabled && !eng.hasThicknessHeatmap()) {
+    s.patchHeatmap({ enabled: false, busy: false, progress: 0, range: null, partId: null, error: null })
+  }
+  // same reconcile for the clearance map (e.g. its shell part was removed/replaced)
+  if (s.fit.mapEnabled && !eng.hasClearanceMap()) {
+    s.patchFit({ mapEnabled: false, mapRange: null, mapPartId: null })
+  }
+  // and for the undercut survey (its scan part removed/replaced → drop the gizmo too)
+  if (s.fit.surveyEnabled && !eng.hasUndercutSurvey()) {
+    // a drag-scheduled recompute must not fire against the now-gone scan
+    if (surveyDebounce) { clearTimeout(surveyDebounce); surveyDebounce = null }
+    eng.hideInsertionAxis()
+    s.patchFit({ surveyEnabled: false, undercutArea: null, surveyPartId: null })
+  }
+  // and for the brush-select (its scan part removed/replaced → disarm + drop the overlay)
+  if (s.fit.brushActive && !eng.hasBrushSelect()) {
+    s.patchFit({ brushActive: false, brushCount: 0 })
+  }
+  scheduleAutosave()
+  if (s.tab === 'cost') scheduleVolumeRecompute()
 }
 
 // ---------- import ----------
@@ -199,7 +231,7 @@ export async function analyzeSelected(): Promise<void> {
   if (!mesh) return
   store.patchRepair({ busy: 'analyze', error: null })
   try {
-    const report = await repairClient.analyze(mesh)
+    const report = await clients.repair.analyze(mesh)
     getEngine().showAnalysisHighlights(report)
     useAppStore.getState().patchRepair({ busy: null, report })
   } catch (err) {
@@ -216,7 +248,7 @@ export async function healSelected(): Promise<void> {
   if (!mesh) return
   store.patchRepair({ busy: 'heal', error: null })
   try {
-    const outcome = await repairClient.heal(mesh, store.repair.options)
+    const outcome = await clients.repair.heal(mesh, store.repair.options)
     // push current state for undo, then replace with healed world-space mesh
     const saved = eng.getPartForSave(id)
     if (saved) {
@@ -260,7 +292,7 @@ export async function splitSelected(): Promise<void> {
   if (!mesh) return
   store.patchRepair({ busy: 'split', error: null })
   try {
-    const shells = await repairClient.split(mesh)
+    const shells = await clients.repair.split(mesh)
     if (shells.length > 1) {
       const name = eng.partInfo(id)?.name ?? 'part'
       eng.removePart(id)
@@ -821,7 +853,7 @@ export async function computeThicknessHeatmap(): Promise<void> {
   if (!mesh) return
   thicknessJob?.cancel()
   store.patchHeatmap({ busy: true, progress: 0, error: null, partId: id })
-  const job = thicknessClient.compute(mesh, (p) =>
+  const job = clients.thickness.compute(mesh, (p) =>
     useAppStore.getState().patchHeatmap({ progress: p }),
   )
   thicknessJob = job
@@ -961,7 +993,7 @@ export async function generateOffsetPart(): Promise<void> {
   const clearance = store.fit.clearanceMm
   fitJob?.cancel()
   store.patchFit({ busy: true, progress: 0, stage: 'Starting', error: null })
-  const job = fitClient.offset(scan, clearance, FIT_SPHERE_SEGMENTS, (p, stage) =>
+  const job = clients.fit.offset(scan, clearance, FIT_SPHERE_SEGMENTS, (p, stage) =>
     useAppStore.getState().patchFit({ progress: p, stage }),
   )
   fitJob = job
@@ -1012,7 +1044,7 @@ export async function subtractFit(): Promise<void> {
   const clearance = store.fit.clearanceMm
   fitJob?.cancel()
   store.patchFit({ busy: true, progress: 0, stage: 'Starting', error: null })
-  const job = fitClient.subtract(scan, shell, clearance, FIT_SPHERE_SEGMENTS, (p, stage) =>
+  const job = clients.fit.subtract(scan, shell, clearance, FIT_SPHERE_SEGMENTS, (p, stage) =>
     useAppStore.getState().patchFit({ progress: p, stage }),
   )
   fitJob = job
@@ -1063,7 +1095,7 @@ export async function computeClearanceMap(): Promise<void> {
   if (!scan || !shell) return
   fitJob?.cancel()
   store.patchFit({ busy: true, progress: 0, stage: 'Measuring clearance', error: null })
-  const job = fitClient.clearance(shell, scan, (p, stage) =>
+  const job = clients.fit.clearance(shell, scan, (p, stage) =>
     useAppStore.getState().patchFit({ progress: p, stage }),
   )
   fitJob = job
@@ -1167,7 +1199,7 @@ async function runSurvey(quiet = false): Promise<void> {
   if (!quiet) {
     useAppStore.getState().patchFit({ busy: true, progress: 0, stage: 'Surveying undercuts', error: null })
   }
-  const job = fitClient.survey(scan.mesh, axis, (p, stage) => {
+  const job = clients.fit.survey(scan.mesh, axis, (p, stage) => {
     if (!quiet) useAppStore.getState().patchFit({ progress: p, stage })
   })
   fitJob = job
@@ -1275,7 +1307,7 @@ export async function findBestFitAxis(): Promise<void> {
   const seed = useAppStore.getState().fit.insertionAxis
   fitJob?.cancel()
   useAppStore.getState().patchFit({ busy: true, progress: 0, stage: 'Searching axes', error: null })
-  const job = fitClient.bestAxis(scan.mesh, seed, (p, stage) =>
+  const job = clients.fit.bestAxis(scan.mesh, seed, (p, stage) =>
     useAppStore.getState().patchFit({ progress: p, stage }),
   )
   fitJob = job
@@ -1318,7 +1350,7 @@ export async function runBlockout(): Promise<void> {
   const { insertionAxis: axis, retentionMm } = useAppStore.getState().fit
   fitJob?.cancel()
   useAppStore.getState().patchFit({ busy: true, progress: 0, stage: 'Starting', error: null })
-  const job = fitClient.blockout(scan.mesh, axis, retentionMm, FIT_SPHERE_SEGMENTS, (p, stage) =>
+  const job = clients.fit.blockout(scan.mesh, axis, retentionMm, FIT_SPHERE_SEGMENTS, (p, stage) =>
     useAppStore.getState().patchFit({ progress: p, stage }),
   )
   fitJob = job
@@ -1424,7 +1456,7 @@ export async function generateShell(): Promise<void> {
   const indices = selection && selection.id === scanId ? selection.indices : null
   fitJob?.cancel()
   store.patchFit({ busy: true, progress: 0, stage: 'Starting', error: null })
-  const job = fitClient.shell(
+  const job = clients.fit.shell(
     scan, indices, axis, clearanceMm, shellThicknessMm, openGingival, FIT_SPHERE_SEGMENTS,
     (p, stage) => useAppStore.getState().patchFit({ progress: p, stage }),
   )
@@ -1677,7 +1709,7 @@ export async function applyResize(): Promise<void> {
       smoothingDeg: r.smoothingDeg,
     })
     if (r.reheal) {
-      out = (await repairClient.heal(out, { mode: 'safe', ...HEAL_PRESETS.safe })).mesh
+      out = (await clients.repair.heal(out, { mode: 'safe', ...HEAL_PRESETS.safe })).mesh
     }
     // push current state for undo, then swap in the resized world-space mesh
     const saved = eng.getPartForSave(id)
@@ -2064,4 +2096,53 @@ export async function copyReportText(): Promise<void> {
   } catch (err) {
     store.patchDeliver({ error: err instanceof Error ? err.message : String(err) })
   }
+}
+
+// ---------- test seams (issue #18) ----------
+
+/**
+ * Internal hooks for studio.test.ts only — NOT part of the controller's public
+ * API. They let a test inject a fake engine / job clients and reset the module
+ * singletons between cases, so the orchestration can be exercised without real
+ * workers or a WebGL context. The `__` prefix marks it off-limits to app code.
+ */
+export const __studioTestSeams = {
+  /** Force the active engine singleton (cast a fake SceneManager through `unknown`). */
+  setEngine(fake: SceneManager | null) {
+    engine = fake
+  },
+  /** Replace `initEngine`'s engine constructor (for tests that exercise wiring). */
+  setEngineFactory(factory: (container: HTMLElement) => SceneManager) {
+    createEngine = factory
+  },
+  /** Swap in fake job clients; unspecified facades keep their real implementation. */
+  setClients(overrides: Partial<StudioClients>) {
+    clients = { ...realClients, ...overrides }
+  },
+  /** The non-destructive heal/resize undo stacks, keyed by part id. */
+  getRevisions() {
+    return revisions
+  },
+  /** The in-flight job handles, to assert supersede/cancel behaviour. */
+  getJobs() {
+    return { fitJob, thicknessJob }
+  },
+  /** Invoke the `partsChanged` reconcile exactly as initEngine wires it. */
+  firePartsChanged() {
+    handlePartsChanged()
+  },
+  /** Restore pristine module state (engine, clients, timers, jobs, revisions). */
+  reset() {
+    engine = null
+    clients = realClients
+    createEngine = (container) => new SceneManager(container)
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+    if (volumeTimer) { clearTimeout(volumeTimer); volumeTimer = null }
+    if (surveyDebounce) { clearTimeout(surveyDebounce); surveyDebounce = null }
+    fitJob = null
+    thicknessJob = null
+    pickConsumer = null
+    nextPartNum = 1
+    revisions.clear()
+  },
 }
