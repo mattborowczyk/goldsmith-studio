@@ -3,11 +3,17 @@ import { estimateStorage, requestPersistentStorage } from './db'
 
 /** Swap navigator.storage for the duration of one assertion. */
 function withStorage(storage: unknown, fn: () => Promise<void>) {
-  const nav = globalThis.navigator as { storage?: unknown }
+  const g = globalThis as { navigator?: { storage?: unknown } }
+  // Node < 21 has no global `navigator` (CI runs Node 20); stand one in so the
+  // swap works there too, and remove it again afterwards.
+  const hadNavigator = 'navigator' in g
+  if (!hadNavigator) g.navigator = {}
+  const nav = g.navigator as { storage?: unknown }
   const originalStorage = Object.getOwnPropertyDescriptor(nav, 'storage')
   Object.defineProperty(nav, 'storage', { value: storage, configurable: true })
   return fn().finally(() => {
-    if (originalStorage) Object.defineProperty(nav, 'storage', originalStorage)
+    if (!hadNavigator) delete g.navigator
+    else if (originalStorage) Object.defineProperty(nav, 'storage', originalStorage)
     else delete nav.storage
   })
 }
