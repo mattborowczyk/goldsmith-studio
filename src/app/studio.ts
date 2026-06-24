@@ -2139,6 +2139,10 @@ export const __studioTestSeams = {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
     if (volumeTimer) { clearTimeout(volumeTimer); volumeTimer = null }
     if (surveyDebounce) { clearTimeout(surveyDebounce); surveyDebounce = null }
+    // abort any in-flight job before dropping its handle, so a test that exits
+    // mid-job doesn't leak worker work past cleanup
+    fitJob?.cancel()
+    thicknessJob?.cancel()
     fitJob = null
     thicknessJob = null
     pickConsumer = null
