@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit automated PR review configuration.
+# Reference: https://docs.coderabbit.ai/reference/configuration
+# NOTE: this config alone does NOT activate reviews — the CodeRabbit GitHub App
+# (https://github.com/apps/coderabbitai) must be installed on the repo.
+
+language: en-US
+tone_instructions: "GoldSmith Studio is an offline-first 3D jeweller PWA (TypeScript, React 19, Zustand, Three.js, Manifold WASM, Vitest). Keep the core/ (pure logic) vs app/ (controller) boundary clean. Prefer concise, actionable feedback."
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  changed_files_summary: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+  # Focus on source; ignore build output, deps and the lockfile.
+  path_filters:
+    - "src/**"
+    - "!dist/**"
+    - "!node_modules/**"
+    - "!pnpm-lock.yaml"
+
+chat:
+  auto_reply: true
