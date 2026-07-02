@@ -193,6 +193,32 @@ export function makeBulgedStud(opts: {
   return { positions, indices: new Uint32Array(tris) }
 }
 
+/** Open-bottomed convex dome (single-valued along +Z) — a clean patch for selection tests. */
+export function makeDome(R = 5, seg = 24, rings = 12): MeshData {
+  const verts: number[] = []
+  for (let i = 0; i < rings; i++) {
+    const beta = (Math.PI / 2) * (1 - i / rings)
+    const r = R * Math.sin(beta), z = R * Math.cos(beta)
+    for (let j = 0; j < seg; j++) {
+      const a = (2 * Math.PI * j) / seg
+      verts.push(r * Math.cos(a), r * Math.sin(a), z)
+    }
+  }
+  const apexIdx = rings * seg
+  verts.push(0, 0, R)
+  const positions = new Float32Array(verts)
+  const ring = (i: number, j: number) => i * seg + (j % seg)
+  const tris: number[] = []
+  for (let i = 0; i < rings - 1; i++) {
+    for (let j = 0; j < seg; j++) {
+      tris.push(ring(i, j), ring(i, j + 1), ring(i + 1, j + 1))
+      tris.push(ring(i, j), ring(i + 1, j + 1), ring(i + 1, j))
+    }
+  }
+  for (let j = 0; j < seg; j++) tris.push(ring(rings - 1, j), ring(rings - 1, j + 1), apexIdx)
+  return { positions, indices: new Uint32Array(tris) }
+}
+
 /** Flip the winding of every triangle (inside-out cube). */
 export function invert(mesh: MeshData): MeshData {
   const indices = mesh.indices.slice()

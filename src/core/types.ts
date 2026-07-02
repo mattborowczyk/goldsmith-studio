@@ -142,6 +142,34 @@ export interface SectionOptions {
   thickness: number
 }
 
+// ---------- grillz margin curves (epic #45, issue #47) ----------
+
+/**
+ * One control point of a tooth-margin curve: a position on/near the scan
+ * surface, optionally bound back to the scan so the drag-handle editor (#49)
+ * can re-project it after a move and the wand (#48) can refine it.
+ */
+export interface MarginControlPoint {
+  /** Position on/near the scan surface (mm, scan space). */
+  position: Vec3
+  /** Scan vertex this point was derived from, when it came from a selection. */
+  vertex?: number
+  /** Scan triangle adjacent to the curve here — re-projection anchor after drags. */
+  face?: number
+}
+
+/**
+ * An ordered **closed** loop of control points tracing a tooth margin on the
+ * scan surface (consecutive points are connected; the last closes back to the
+ * first). This is the editable selection model the magic wand emits, the
+ * drag-handle UI mutates, and the shell clip consumes via
+ * `buildSelectionPrismFromCurve` — replacing the raw vertex `Set` as the
+ * canonical selection once a margin is being edited.
+ */
+export interface MarginCurve {
+  points: MarginControlPoint[]
+}
+
 // ---------- smart ring resizer (plan §2.6) ----------
 
 /**
