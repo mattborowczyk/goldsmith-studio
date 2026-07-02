@@ -10,9 +10,13 @@ import type {
 } from '@/core/geometry/fitClient'
 import type { ThicknessJob, ThicknessResult } from '@/core/geometry/thicknessClient'
 import type { HealOutcome } from '@/core/geometry/repairClient'
+import type { RimSummary } from '@/core/geometry/baseCap'
 import { useAppStore } from '@/store/appStore'
 import {
   __studioTestSeams as seams,
+  applyBaseCap,
+  beginBaseCap,
+  cancelBaseCap,
   cancelFit,
   cancelThicknessHeatmap,
   computeThicknessHeatmap,
@@ -24,6 +28,7 @@ import {
   undoHeal,
   undoResize,
   setResizePicking,
+  updateBaseCap,
 } from '@/app/studio'
 
 /**
@@ -128,6 +133,7 @@ class FakeSceneManager {
   setPickMode = vi.fn()
   setResizeOverlay = vi.fn()
   setThicknessHeatmap = vi.fn()
+  setCapPlanePreview = vi.fn()
   setHeatmapThreshold = vi.fn()
   on = vi.fn(() => () => {})
 
@@ -439,7 +445,7 @@ describe('heal / resize undo stacks', () => {
         Promise.resolve({ mesh: healed, before: report, after: report, unioned: false }),
     )
     seams.setClients({
-      repair: { analyze: vi.fn(), heal, split: vi.fn() },
+      repair: { analyze: vi.fn(), heal, split: vi.fn(), baseCapInfo: vi.fn(), baseCap: vi.fn() },
     })
 
     await healSelected()
@@ -455,6 +461,80 @@ describe('heal / resize undo stacks', () => {
     expect(seams.getRevisions().get('p1')?.length).toBe(0)
     expect(useAppStore.getState().repair.canUndo).toBe(false)
     expect(fake.getWorldMeshData('p1')!.positions.length).toBe(original.positions.length)
+  })
+
+  it('applyBaseCap pushes a revision, replaces the part, and dismisses the tool', async () => {
+    const fake = installEngine()
+    const original = makeCube(10)
+    fake.addPart('scan', 'Scan', original)
+    useAppStore.setState({ selectedId: 'scan' })
+
+    // open-top-box rim: flattest along z, body below the rim
+    const info: RimSummary = {
+      loopEdges: 4,
+      loopCount: 1,
+      rimMin: [0, 0, 10], rimMax: [10, 10, 10], rimCentroid: [5, 5, 10],
+      meshMin: [0, 0, 0], meshMax: [10, 10, 10], meshCentroid: [5, 5, 4],
+    }
+    const capped = makeCube(12)
+    seams.setClients({
+      repair: {
+        analyze: vi.fn(),
+        heal: vi.fn(),
+        split: vi.fn(),
+        baseCapInfo: vi.fn(() => Promise.resolve<RimSummary | null>(info)),
+        baseCap: vi.fn(() =>
+          Promise.resolve<HealOutcome>({ mesh: capped, before: report, after: report, unioned: true }),
+        ),
+      },
+    })
+
+    await beginBaseCap()
+    const cap = useAppStore.getState().repair.baseCap!
+    // defaults: z axis (flattest rim), plane just past the rim, on the far side of the body
+    expect(cap.axis).toBe('z')
+    expect(cap.position).toBeGreaterThan(10)
+    expect(cap.max).toBeGreaterThanOrEqual(cap.position)
+    expect(fake.setCapPlanePreview).toHaveBeenLastCalledWith({ axis: 'z', position: cap.position })
+
+    // dragging the plane clamps to the tool's range and moves the preview
+    updateBaseCap({ position: 1e9 })
+    const moved = useAppStore.getState().repair.baseCap!
+    expect(moved.position).toBe(moved.max)
+    expect(fake.setCapPlanePreview).toHaveBeenLastCalledWith({ axis: 'z', position: moved.max })
+
+    await applyBaseCap()
+    expect(seams.getRevisions().get('scan')?.length).toBe(1)
+    expect(useAppStore.getState().repair.canUndo).toBe(true)
+    expect(useAppStore.getState().repair.baseCap).toBeNull()
+    expect(fake.getWorldMeshData('scan')!.positions.length).toBe(capped.positions.length)
+    expect(fake.setCapPlanePreview).toHaveBeenLastCalledWith(null)
+
+    undoHeal()
+    expect(fake.getWorldMeshData('scan')!.positions.length).toBe(original.positions.length)
+  })
+
+  it('beginBaseCap surfaces a message when the mesh has no open rim', async () => {
+    const fake = installEngine()
+    fake.addPart('scan', 'Scan', makeCube(10))
+    useAppStore.setState({ selectedId: 'scan' })
+    seams.setClients({
+      repair: {
+        analyze: vi.fn(),
+        heal: vi.fn(),
+        split: vi.fn(),
+        baseCapInfo: vi.fn(() => Promise.resolve<RimSummary | null>(null)),
+        baseCap: vi.fn(),
+      },
+    })
+
+    await beginBaseCap()
+    expect(useAppStore.getState().repair.baseCap).toBeNull()
+    expect(useAppStore.getState().repair.error).toMatch(/no open rim/i)
+    expect(fake.setCapPlanePreview).not.toHaveBeenCalled()
+
+    cancelBaseCap() // no-op when the tool is not armed
+    expect(fake.setCapPlanePreview).toHaveBeenLastCalledWith(null)
   })
 
   it('undoResize pops the revision stack one entry at a time', () => {

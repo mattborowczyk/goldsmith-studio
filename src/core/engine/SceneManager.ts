@@ -24,6 +24,7 @@ import type {
   PartInfo,
   Projection,
   ResizeOverlay,
+  SectionAxis,
   SectionOptions,
   Vec3,
   ViewPreset,
@@ -174,6 +175,8 @@ export class SceneManager {
   private axisGizmo: AxisGizmo | null = null
   private draggingAxis = false
   private sectionHelper: THREE.Object3D | null = null
+  /** Close-open-base cut-plane preview — same quad as the section helper, no clipping. */
+  private capPlaneHelper: THREE.Object3D | null = null
   private backgroundTexture: THREE.Texture | null = null
   private listeners: { [K in keyof SceneManagerEvents]: Set<SceneManagerEvents[K]> } = {
     partsChanged: new Set(),
@@ -1051,6 +1054,33 @@ export class SceneManager {
     }
   }
 
+  /**
+   * Show (or hide, with null) where the close-open-base cap plane sits. Unlike
+   * setSection this never clips materials — it is a placement preview only.
+   */
+  setCapPlanePreview(opts: { axis: SectionAxis; position: number } | null) {
+    if (this.capPlaneHelper) {
+      this.scene.remove(this.capPlaneHelper)
+      this.capPlaneHelper.traverse((obj) => {
+        const o = obj as THREE.Mesh
+        o.geometry?.dispose()
+        ;(o.material as THREE.Material | undefined)?.dispose?.()
+      })
+      this.capPlaneHelper = null
+    }
+    if (!opts) return
+    const axis = new THREE.Vector3(
+      opts.axis === 'x' ? 1 : 0,
+      opts.axis === 'y' ? 1 : 0,
+      opts.axis === 'z' ? 1 : 0,
+    )
+    this.capPlaneHelper = this.buildSectionHelper(
+      { axis: opts.axis, position: opts.position, flip: false, slice: false, thickness: 0 },
+      axis,
+    )
+    if (this.capPlaneHelper) this.scene.add(this.capPlaneHelper)
+  }
+
   /** Translucent gold quad showing where the cut plane sits. */
   private buildSectionHelper(opts: SectionOptions, axis: THREE.Vector3): THREE.Object3D | null {
     const box = this.partsBox()
@@ -1800,6 +1830,7 @@ export class SceneManager {
     this.clearResizeOverlay()
     this.hideInsertionAxis()
     this.setSection(null)
+    this.setCapPlanePreview(null)
     this.clearParts()
     for (const mat of this.matCache.values()) mat.dispose()
     this.matCache.clear()

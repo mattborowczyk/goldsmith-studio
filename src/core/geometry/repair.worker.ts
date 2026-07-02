@@ -2,6 +2,7 @@
 import Module from 'manifold-3d'
 import type { ManifoldToplevel } from 'manifold-3d'
 import type { AnalysisReport, HealOptions, MeshData } from '../types'
+import { closeOpenBase, summarizeOpenRim, type BaseCapOptions, type RimSummary } from './baseCap'
 import { analyzeMesh } from './meshAnalysis'
 import {
   fillHoles,
@@ -25,6 +26,8 @@ export type WorkerRequest =
   | { id: number; op: 'analyze'; mesh: MeshData }
   | { id: number; op: 'heal'; mesh: MeshData; options: HealOptions }
   | { id: number; op: 'split'; mesh: MeshData }
+  | { id: number; op: 'baseCapInfo'; mesh: MeshData }
+  | { id: number; op: 'baseCap'; mesh: MeshData; options: BaseCapOptions }
 
 export type WorkerResponse =
   | { id: number; ok: true; result: unknown }
@@ -76,6 +79,25 @@ async function heal(mesh: MeshData, options: HealOptions): Promise<{ mesh: MeshD
   return { mesh: m, before, after, unioned }
 }
 
+/**
+ * Close the largest open boundary loop with a planar base cap (issue #26),
+ * then attempt the same Manifold union pass heal uses — on success it both
+ * validates the capped solid and merges any overlapping shells.
+ */
+async function baseCap(mesh: MeshData, options: BaseCapOptions): Promise<{ mesh: MeshData; before: AnalysisReport; after: AnalysisReport; unioned: boolean }> {
+  const before = analyzeMesh(mesh)
+  let m = closeOpenBase(mesh, options)
+  let unioned = false
+  try {
+    m = await unionShells(m)
+    unioned = true
+  } catch {
+    // not manifold (e.g. other holes remain) — keep the TS-capped mesh
+  }
+  const after = analyzeMesh(m)
+  return { mesh: m, before, after, unioned }
+}
+
 self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   const req = ev.data
   try {
@@ -107,6 +129,23 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
           parts,
           parts.flatMap((p) => [p.positions.buffer, p.indices.buffer]),
         )
+        break
+      }
+      case 'baseCapInfo': {
+        const summary: RimSummary | null = summarizeOpenRim(req.mesh)
+        postResult(req.id, summary, [])
+        break
+      }
+      case 'baseCap': {
+        const result = await baseCap(req.mesh, req.options)
+        postResult(req.id, result, [
+          result.mesh.positions.buffer,
+          result.mesh.indices.buffer,
+          result.before.boundaryEdgePositions.buffer,
+          result.before.flippedFacePositions.buffer,
+          result.after.boundaryEdgePositions.buffer,
+          result.after.flippedFacePositions.buffer,
+        ])
         break
       }
     }

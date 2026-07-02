@@ -1,10 +1,21 @@
-import { Activity, Split, Undo2, Wrench } from 'lucide-react'
-import { analyzeSelected, healSelected, splitSelected, undoHeal } from '@/app/studio'
-import type { AnalysisReport, HealMode } from '@/core/types'
+import { useEffect } from 'react'
+import { Activity, ArrowDownToLine, Split, Undo2, Wrench } from 'lucide-react'
+import {
+  analyzeSelected,
+  applyBaseCap,
+  beginBaseCap,
+  cancelBaseCap,
+  healSelected,
+  splitSelected,
+  undoHeal,
+  updateBaseCap,
+} from '@/app/studio'
+import type { AnalysisReport, HealMode, SectionAxis } from '@/core/types'
 import { HEAL_PRESETS } from '@/core/types'
 import { useAppStore } from '@/store/appStore'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'
+import { Slider } from '@/components/ui/slider'
 import { cn } from '@/lib/utils'
 
 function Stat({ label, value, bad }: { label: string; value: string | number; bad?: boolean }) {
@@ -31,6 +42,70 @@ function ReportStats({ report }: { report: AnalysisReport }) {
       <Stat label="Watertight" value={report.watertight ? 'yes' : 'NO'} bad={!report.watertight} />
       <Stat label="Volume" value={`${report.volume.toFixed(2)} mm³`} />
       <Stat label="Surface area" value={`${report.surfaceArea.toFixed(2)} mm²`} />
+    </div>
+  )
+}
+
+/** Close-open-base tool (issue #26): axis pick + cap-plane slider + apply. */
+function BaseCapSection({ busy, hasTarget }: { busy: boolean; hasTarget: boolean }) {
+  const repair = useAppStore((s) => s.repair)
+  const cap = repair.baseCap
+
+  // hide the placement plane when the Repair tab unmounts mid-tool
+  useEffect(() => cancelBaseCap, [])
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border/60 pt-4">
+      <label className="text-xs font-medium text-muted-foreground">Close open base</label>
+      <p className="text-xs text-muted-foreground">
+        For scans that arrive as an open shell (the whole top missing): extrudes the open rim to a
+        flat plane and caps it, making the mesh watertight for the Fit tools.
+      </p>
+      {!cap ? (
+        <Button variant="secondary" disabled={busy || !hasTarget} onClick={() => void beginBaseCap()}>
+          <ArrowDownToLine />
+          {repair.busy === 'baseCap' ? 'Finding open rim…' : 'Close open base'}
+        </Button>
+      ) : (
+        <div className="flex flex-col gap-2 rounded-lg bg-muted/40 p-3">
+          <div className="flex gap-1">
+            {(['x', 'y', 'z'] as SectionAxis[]).map((axis) => (
+              <Button
+                key={axis}
+                variant={cap.axis === axis ? 'default' : 'secondary'}
+                size="sm"
+                className="flex-1 uppercase"
+                onClick={() => updateBaseCap({ axis })}
+              >
+                {axis}
+              </Button>
+            ))}
+          </div>
+          <label className="text-xs text-muted-foreground">
+            Base plane{' '}
+            <span className="readout text-foreground">{cap.position.toFixed(2)} mm</span>
+            <Slider
+              min={cap.min}
+              max={cap.max}
+              step={Math.max((cap.max - cap.min) / 200, 0.01)}
+              value={[cap.position]}
+              onValueChange={([position]) => updateBaseCap({ position })}
+            />
+          </label>
+          <p className="text-xs text-muted-foreground">
+            Open rim: {cap.info.loopEdges.toLocaleString()} edges
+            {cap.info.loopCount > 1 ? ` (+${cap.info.loopCount - 1} smaller holes left to Heal)` : ''}
+          </p>
+          <div className="flex gap-2">
+            <Button className="flex-1" disabled={busy} onClick={() => void applyBaseCap()}>
+              {repair.busy === 'baseCap' ? 'Capping…' : 'Apply cap'}
+            </Button>
+            <Button variant="secondary" className="flex-1" disabled={busy} onClick={cancelBaseCap}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -156,6 +231,8 @@ export function RepairPanel() {
           </Button>
         </div>
       </div>
+
+      <BaseCapSection busy={busy} hasTarget={hasTarget} />
 
       {repair.beforeAfter && (
         <div className="flex flex-col gap-2 border-t border-border/60 pt-4">

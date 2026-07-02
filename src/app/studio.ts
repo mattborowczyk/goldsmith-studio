@@ -1,6 +1,7 @@
 import { SceneManager } from '@/core/engine/SceneManager'
 import { importFile, scaleMeshData } from '@/core/io/importers'
 import { repairClient } from '@/core/geometry/repairClient'
+import { AXIS_INDEX, type RimSummary } from '@/core/geometry/baseCap'
 import { thicknessClient, type ThicknessJob } from '@/core/geometry/thicknessClient'
 import { fitClient, type FitJob } from '@/core/geometry/fitClient'
 import { defaultInsertionAxis } from '@/core/geometry/undercut'
@@ -67,10 +68,17 @@ import type {
   ResizeMode,
   ResizeOverlay,
   RingFrame,
+  SectionAxis,
   Vec3,
 } from '@/core/types'
 import { HEAL_PRESETS, UNIT_TO_MM } from '@/core/types'
-import { useAppStore, type CostSettings, type DeliverState, type SectionState } from '@/store/appStore'
+import {
+  useAppStore,
+  type BaseCapState,
+  type CostSettings,
+  type DeliverState,
+  type SectionState,
+} from '@/store/appStore'
 
 /**
  * Application controller: owns the SceneManager singleton and orchestrates
@@ -108,7 +116,7 @@ interface StudioClients {
     'offset' | 'subtract' | 'clearance' | 'survey' | 'bestAxis' | 'blockout' | 'shell'
   >
   thickness: Pick<typeof thicknessClient, 'compute'>
-  repair: Pick<typeof repairClient, 'analyze' | 'heal' | 'split'>
+  repair: Pick<typeof repairClient, 'analyze' | 'heal' | 'split' | 'baseCapInfo' | 'baseCap'>
 }
 const realClients: StudioClients = { fit: fitClient, thickness: thicknessClient, repair: repairClient }
 let clients: StudioClients = realClients
@@ -307,6 +315,121 @@ export async function splitSelected(): Promise<void> {
   }
 }
 
+// ---------- close open base (issue #26) ----------
+
+/** Axis whose rim extent is smallest relative to the mesh — the natural cap axis. */
+function flattestRimAxis(info: RimSummary): SectionAxis {
+  let best: SectionAxis = 'z'
+  let bestScore = Infinity
+  for (const axis of ['x', 'y', 'z'] as const) {
+    const ai = AXIS_INDEX[axis]
+    const extent = Math.max(info.meshMax[ai] - info.meshMin[ai], 1e-6)
+    const score = (info.rimMax[ai] - info.rimMin[ai]) / extent
+    if (score < bestScore) {
+      bestScore = score
+      best = axis
+    }
+  }
+  return best
+}
+
+/**
+ * Default plane position + slider range along `axis`: on the rim's side of the
+ * body (away from the mesh centroid), from the rim extreme outward, defaulting
+ * to just past the rim.
+ */
+function capRange(info: RimSummary, axis: SectionAxis): { position: number; min: number; max: number } {
+  const ai = AXIS_INDEX[axis]
+  const side = info.rimCentroid[ai] > info.meshCentroid[ai] ? 1 : -1
+  const extent = Math.max(info.meshMax[ai] - info.meshMin[ai], 1)
+  const rimEdge = side > 0 ? info.rimMax[ai] : info.rimMin[ai]
+  const position = rimEdge + side * Math.max(extent * 0.02, 0.2)
+  const far = rimEdge + side * extent * 0.5
+  return side > 0 ? { position, min: rimEdge, max: far } : { position, min: far, max: rimEdge }
+}
+
+/**
+ * Arm the close-open-base tool: find the largest open rim in the worker, derive
+ * a default cap axis/position, and show the placement plane in the viewport.
+ */
+export async function beginBaseCap(): Promise<void> {
+  const store = useAppStore.getState()
+  const id = requireSelection()
+  if (!id) return
+  const mesh = getEngine().getWorldMeshData(id)
+  if (!mesh) return
+  store.patchRepair({ busy: 'baseCap', error: null })
+  try {
+    const info = await clients.repair.baseCapInfo(mesh)
+    if (!info) {
+      useAppStore.getState().patchRepair({
+        busy: null,
+        error: 'No open rim found — the mesh is already closed. Use Heal for small holes.',
+      })
+      return
+    }
+    const axis = flattestRimAxis(info)
+    const { position, min, max } = capRange(info, axis)
+    useAppStore.getState().patchRepair({ busy: null, baseCap: { axis, position, min, max, info } })
+    getEngine().setCapPlanePreview({ axis, position })
+  } catch (err) {
+    useAppStore.getState().patchRepair({ busy: null, error: String(err) })
+  }
+}
+
+/** Move the cap plane (axis change re-derives the default position + range). */
+export function updateBaseCap(patch: Partial<Pick<BaseCapState, 'axis' | 'position'>>): void {
+  const store = useAppStore.getState()
+  const prev = store.repair.baseCap
+  if (!prev) return
+  let next: BaseCapState = { ...prev, ...patch }
+  if (patch.axis && patch.axis !== prev.axis) {
+    next = { ...next, ...capRange(prev.info, patch.axis) }
+  }
+  next.position = Math.min(Math.max(next.position, next.min), next.max)
+  store.patchRepair({ baseCap: next })
+  getEngine().setCapPlanePreview({ axis: next.axis, position: next.position })
+}
+
+/** Bake the planar base cap (non-destructive — undoable like heal). */
+export async function applyBaseCap(): Promise<void> {
+  const store = useAppStore.getState()
+  const cap = store.repair.baseCap
+  const id = requireSelection()
+  if (!cap || !id) return
+  const eng = getEngine()
+  const mesh = eng.getWorldMeshData(id)
+  if (!mesh) return
+  store.patchRepair({ busy: 'baseCap', error: null })
+  try {
+    const outcome = await clients.repair.baseCap(mesh, { axis: cap.axis, position: cap.position })
+    const saved = eng.getPartForSave(id)
+    if (saved) {
+      const stack = revisions.get(id) ?? []
+      stack.push({ data: saved.data, matrix: saved.matrix })
+      revisions.set(id, stack)
+    }
+    replaceWithWorldMesh(id, outcome.mesh)
+    eng.clearHighlights()
+    eng.setCapPlanePreview(null)
+    useAppStore.getState().patchRepair({
+      busy: null,
+      baseCap: null,
+      beforeAfter: { before: outcome.before, after: outcome.after, unioned: outcome.unioned },
+      report: outcome.after,
+      canUndo: true,
+    })
+  } catch (err) {
+    useAppStore.getState().patchRepair({ busy: null, error: String(err) })
+  }
+}
+
+/** Dismiss the tool and hide the placement plane. */
+export function cancelBaseCap(): void {
+  engine?.setCapPlanePreview(null)
+  if (useAppStore.getState().repair.baseCap) useAppStore.getState().patchRepair({ baseCap: null })
+}
+
 /** Replace a part's geometry with world-space data and reset its transform. */
 function replaceWithWorldMesh(id: string, mesh: MeshData) {
   const eng = getEngine()
@@ -333,6 +456,7 @@ function updateRepairUndoFlag(id: string | null) {
   const canUndo = id ? (revisions.get(id)?.length ?? 0) > 0 : false
   useAppStore.getState().patchRepair({ canUndo, report: null, beforeAfter: null })
   engine?.clearHighlights()
+  cancelBaseCap() // rim info belongs to the previous selection
 }
 
 // ---------- persistence ----------
@@ -969,7 +1093,7 @@ function partName(id: string): string {
 function fitErrorMessage(err: unknown): string {
   const s = String(err)
   if (/manifold|watertight/i.test(s)) {
-    return 'Couldn’t make the mesh watertight — run Repair on the scan and shell first.'
+    return 'Couldn’t make the mesh watertight — run Repair on the scan and shell first. If the scan is an open shell (whole top missing), use Repair → Close open base.'
   }
   return s
 }

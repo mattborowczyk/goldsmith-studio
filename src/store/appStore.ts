@@ -14,6 +14,7 @@ import type {
   WorkflowTab,
 } from '@/core/types'
 import { HEAL_PRESETS } from '@/core/types'
+import type { RimSummary } from '@/core/geometry/baseCap'
 import type { HistoryEntry, Material } from '@/core/calc/materials'
 import type { Currency } from '@/core/calc/spotPrices'
 import type { SizeSystem } from '@/core/generators/ringSizes'
@@ -24,14 +25,28 @@ import type {
 } from '@/core/report/reportModel'
 import type { MeshFormat } from '@/core/io/exporters'
 
+/** Close-open-base tool (issue #26): live plane placement over the rim info. */
+export interface BaseCapState {
+  axis: SectionAxis
+  /** Cap-plane coordinate along the axis (mm, world). */
+  position: number
+  /** Slider range: from just past the rim outward. */
+  min: number
+  max: number
+  /** Largest-rim summary the defaults were derived from. */
+  info: RimSummary
+}
+
 export interface RepairState {
   /** Per-part revision stack for non-destructive heal undo. */
-  busy: 'analyze' | 'heal' | 'split' | null
+  busy: 'analyze' | 'heal' | 'split' | 'baseCap' | null
   report: AnalysisReport | null
   beforeAfter: { before: AnalysisReport; after: AnalysisReport; unioned: boolean } | null
   options: HealOptions
   error: string | null
   canUndo: boolean
+  /** Non-null while the close-open-base tool is active (plane preview shown). */
+  baseCap: BaseCapState | null
 }
 
 export interface CostSettings {
@@ -288,6 +303,7 @@ export const useAppStore = create<AppState>((set) => ({
     options: { mode: 'safe', ...HEAL_PRESETS.safe },
     error: null,
     canUndo: false,
+    baseCap: null,
   },
   cost: {
     materials: [],

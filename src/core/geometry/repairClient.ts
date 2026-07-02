@@ -1,4 +1,5 @@
 import type { AnalysisReport, HealOptions, MeshData } from '../types'
+import type { BaseCapOptions, RimSummary } from './baseCap'
 import type { WorkerRequest, WorkerResponse } from './repair.worker'
 
 export interface HealOutcome {
@@ -59,6 +60,18 @@ class RepairClient {
   split(mesh: MeshData): Promise<MeshData[]> {
     const copy = cloneMesh(mesh)
     return this.call({ op: 'split', mesh: copy }, [copy.positions.buffer, copy.indices.buffer])
+  }
+
+  /** Largest open rim + bounds, or null when the mesh has no loop to cap. */
+  baseCapInfo(mesh: MeshData): Promise<RimSummary | null> {
+    const copy = cloneMesh(mesh)
+    return this.call({ op: 'baseCapInfo', mesh: copy }, [copy.positions.buffer, copy.indices.buffer])
+  }
+
+  /** Close the largest open loop with a planar base cap (issue #26). */
+  baseCap(mesh: MeshData, options: BaseCapOptions): Promise<HealOutcome> {
+    const copy = cloneMesh(mesh)
+    return this.call({ op: 'baseCap', mesh: copy, options }, [copy.positions.buffer, copy.indices.buffer])
   }
 }
 
