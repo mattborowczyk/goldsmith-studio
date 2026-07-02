@@ -1,4 +1,5 @@
 import type { MarginControlPoint, MarginCurve, MeshData, Vec3 } from '../types'
+import { unit } from './vec'
 
 /**
  * Margin-curve conversions (issue #47): the bridge between the brush/wand's
@@ -50,43 +51,54 @@ export function marginCurvesFromSelection(scan: MeshData, selected: Set<number>)
     }
   }
 
-  // directed boundary edges (used by exactly one selected face) + their face
-  const next = new Map<number, number>()
-  const faceAt = new Map<number, number>()
+  // directed boundary edges (used by exactly one selected face) + their face.
+  // A vertex can start SEVERAL boundary edges (a pinch — two regions or an
+  // hourglass region sharing one vertex), so successors are lists and loops
+  // are walked per directed edge, consuming each edge exactly once.
+  const outEdges = new Map<number, { w: number; face: number; used: boolean }[]>()
+  let edgeCount = 0
   for (let f = 0; f < faces.length; f += 3) {
     for (let e = 0; e < 3; e++) {
       const u = faces[f + e]
       const w = faces[f + ((e + 1) % 3)]
       if (counts.get(key(u, w)) === 1) {
-        next.set(u, w)
-        faceAt.set(u, f / 3)
+        let list = outEdges.get(u)
+        if (!list) outEdges.set(u, (list = []))
+        list.push({ w, face: f / 3, used: false })
+        edgeCount++
       }
     }
   }
 
   const curves: MarginCurve[] = []
-  const visited = new Set<number>()
-  for (const start of next.keys()) {
-    if (visited.has(start)) continue
-    const loop: number[] = []
-    let v: number | undefined = start
-    let guard = next.size + 1
-    while (v !== undefined && !visited.has(v) && guard-- > 0) {
-      visited.add(v)
-      loop.push(v)
-      v = next.get(v)
+  for (const [start, list] of outEdges) {
+    for (const first of list) {
+      if (first.used) continue
+      const loop: number[] = []
+      const faceAlong: number[] = []
+      let u = start
+      let edge: { w: number; face: number; used: boolean } | undefined = first
+      let guard = edgeCount + 1
+      while (edge && !edge.used && guard-- > 0) {
+        edge.used = true
+        loop.push(u)
+        faceAlong.push(edge.face)
+        u = edge.w
+        if (u === start) break // closed
+        edge = outEdges.get(u)?.find((e) => !e.used)
+      }
+      if (u !== start || loop.length < 3) continue // open chain (non-manifold) — skip
+      const points: MarginControlPoint[] = loop.map((vertex, i) => ({
+        position: [
+          positions[vertex * 3],
+          positions[vertex * 3 + 1],
+          positions[vertex * 3 + 2],
+        ] as Vec3,
+        vertex,
+        face: faceAlong[i],
+      }))
+      curves.push({ points })
     }
-    if (v !== start || loop.length < 3) continue // open chain / pinch — skip
-    const points: MarginControlPoint[] = loop.map((vertex) => ({
-      position: [
-        positions[vertex * 3],
-        positions[vertex * 3 + 1],
-        positions[vertex * 3 + 2],
-      ] as Vec3,
-      vertex,
-      face: faceAt.get(vertex),
-    }))
-    curves.push({ points })
   }
   return curves.sort((a, b) => b.points.length - a.points.length)
 }
@@ -176,9 +188,4 @@ function planeBasis(a: Vec3): [Vec3, Vec3] {
     a[0] * u[1] - a[1] * u[0],
   ]
   return [u, v]
-}
-
-function unit(v: Vec3): Vec3 {
-  const len = Math.hypot(v[0], v[1], v[2])
-  return len > 0 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 1, 0]
 }

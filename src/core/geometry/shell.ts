@@ -1,6 +1,7 @@
 import type { MarginCurve, MeshData, Vec3 } from '../types'
 import { enclosedFaceSet, fullySelectedFaces } from './marginCurve'
 import { computeShells, shellVolumes } from './meshAnalysis'
+import { unit } from './vec'
 
 /**
  * Brush-selection → closed "selection prism" (plan §3.3). The surface brush paints
@@ -114,11 +115,6 @@ function buildPrismFromFaces(
     tris.push(top(u), bot(w), bot(u))
   }
   return { positions: verts, indices: new Uint32Array(tris) }
-}
-
-function unit(v: Vec3): Vec3 {
-  const len = Math.hypot(v[0], v[1], v[2])
-  return len > 0 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 1, 0]
 }
 
 /**

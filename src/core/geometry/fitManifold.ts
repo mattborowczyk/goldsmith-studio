@@ -3,6 +3,7 @@ import type { Manifold, ManifoldToplevel, Mat4 } from 'manifold-3d'
 import type { MeshData, Vec3 } from '../types'
 import { fillHoles, fixWinding, removeDegenerateTriangles, weldVertices } from './meshRepair'
 import { buildSelectionPrism, perToothVolumes } from './shell'
+import { unit } from './vec'
 
 /**
  * Manifold-kernel half of the grillz fit pipeline (plan §3.1): the Minkowski-
@@ -295,10 +296,6 @@ function sweepBox(wasm: ManifoldToplevel, scan: MeshData, axis: Vec3): Manifold 
   }
 }
 
-function unit(v: Vec3): Vec3 {
-  const len = Math.hypot(v[0], v[1], v[2])
-  return len > 0 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 1, 0]
-}
 
 /** Two unit vectors orthogonal to `axis` (and to each other). */
 function basis(axis: Vec3): [Vec3, Vec3] {

@@ -57,6 +57,26 @@ describe('marginCurvesFromSelection', () => {
     expect(curves[1].points.length).toBe(4)
   })
 
+  it('keeps both loops when regions pinch at a shared vertex (bowtie)', () => {
+    // two triangles sharing exactly vertex 0 — the shared vertex starts two
+    // boundary edges, which a single-successor walk would silently drop
+    const bowtie: MeshData = {
+      positions: new Float32Array([
+        0, 0, 0, // 0 — the pinch
+        1, 0, 0, 0, 1, 0, // 1, 2
+        -1, 0, 0, 0, -1, 0, // 3, 4
+      ]),
+      indices: new Uint32Array([0, 1, 2, 0, 3, 4]),
+    }
+    const curves = marginCurvesFromSelection(bowtie, new Set([0, 1, 2, 3, 4]))
+    expect(curves.length).toBe(2)
+    expect(curves[0].points.length).toBe(3)
+    expect(curves[1].points.length).toBe(3)
+    // both loops pass through the pinch vertex, each bound to its own face
+    const facesOfPinch = curves.map((c) => c.points.find((p) => p.vertex === 0)!.face)
+    expect(new Set(facesOfPinch).size).toBe(2)
+  })
+
   it('returns [] when nothing encloses a face', () => {
     expect(marginCurvesFromSelection(makeDome(), new Set([0]))).toEqual([])
     expect(fullySelectedFaces(makeDome(), new Set([0]))).toEqual([])
