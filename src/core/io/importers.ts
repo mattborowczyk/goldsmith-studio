@@ -77,11 +77,20 @@ function collectMeshes(root: THREE.Object3D, baseName: string): ImportedPart[] {
  * Normalize a BufferGeometry to an indexed form. Triangle-soup formats (STL,
  * unindexed OBJ) get exact-duplicate vertices welded so topology analysis sees
  * real connectivity instead of all-boundary edges. mergeVertices carries every
- * attribute (incl. `color`) through, so colours stay aligned to positions.
+ * attribute (incl. `color`) through, so colours stay aligned to positions —
+ * but it also refuses to weld vertices whose attributes differ, and loaders
+ * attach per-face normals to soup, which kept every triangle an island (the
+ * magic wand #48 is the first consumer that noticed). MeshData never keeps
+ * normals/uvs (the engine re-derives them), so drop them before welding;
+ * `color` stays, aligned to positions.
  */
 function normalizeGeometry(geometry: THREE.BufferGeometry, weld: boolean): THREE.BufferGeometry {
   let geo = geometry
-  if (weld) geo = mergeVertices(geo, 1e-6)
+  if (weld) {
+    geo.deleteAttribute('normal')
+    geo.deleteAttribute('uv')
+    geo = mergeVertices(geo, 1e-6)
+  }
   if (!geo.index) geo = indexSequential(geo)
   return geo
 }

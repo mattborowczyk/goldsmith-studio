@@ -40,6 +40,23 @@ describe('PLY import', () => {
   })
 })
 
+describe('triangle-soup welding', () => {
+  it('welds shared corners across faces despite per-face normals (OBJ soup)', async () => {
+    // a 2-triangle-per-side "tent" whose faces fold — per-face normals differ
+    // at the shared ridge, which must not stop the weld (the wand #48 needs
+    // real adjacency out of soup formats)
+    const obj = [
+      'v -1 0 0', 'v 0 0 1', 'v 0 1 1', 'v -1 1 0', 'v 1 0 0', 'v 1 1 0',
+      'f 1 2 3', 'f 1 3 4', 'f 2 5 6', 'f 2 6 3',
+    ].join('\n')
+    const parts = await importFile(new File([obj], 'tent.obj'))
+    expect(parts).toHaveLength(1)
+    expect(parts[0].data.indices.length / 3).toBe(4)
+    // 6 distinct corners — unwelded soup would have kept 12
+    expect(parts[0].data.positions.length / 3).toBe(6)
+  })
+})
+
 describe('scaleMeshData', () => {
   const sample = (): MeshData => ({
     positions: new Float32Array([1, 2, 3, 4, 5, 6]),
