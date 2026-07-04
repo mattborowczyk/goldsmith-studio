@@ -417,7 +417,8 @@ export function FitPanel() {
     <div className="flex flex-col gap-3">
       <p className="text-[11px] text-muted-foreground">
         Grillz cement-gap prep: offset the tooth scan by a clearance, then carve it into your sculpted
-        shell or check the fit. Cosmetic-jewellery use.
+        shell or check the fit. Cosmetic-jewellery use. Open scan (whole top missing)? Make it
+        watertight first with Repair → Close open base.
       </p>
       <OperandSection />
       <ClearanceSection />
