@@ -1,7 +1,8 @@
 /// <reference lib="webworker" />
-import type { MeshData, Vec3 } from '../types'
+import type { MarginCurve, MeshData, Vec3 } from '../types'
 import { computeClearance } from './fit'
 import { blockoutMesh, offsetMesh, shellMesh, subtractMesh } from './fitManifold'
+import { wandSelect } from './teethSegment'
 import { findBestAxis, surveyUndercut } from './undercut'
 
 /**
@@ -14,6 +15,8 @@ import { findBestAxis, surveyUndercut } from './undercut'
  *                interior with uniform clearance, in one job.
  *  - `clearance` per-shell-vertex signed gap to the scan → the clearance map.
  *  - `survey`    per-scan-vertex undercut value along an insertion axis.
+ *  - `wand`      curvature region-grow tooth pick from a clicked point → the
+ *                selected region + its margin curves.
  *  - `bestAxis`  search the insertion axis minimising undercut area.
  *  - `blockout`  fill the undercuts → a draftable scan (a new part).
  *  - `shell`     uniform-thickness shell following the offset surface (a new part),
@@ -30,6 +33,7 @@ export type FitRequest =
   | { id: number; op: 'subtract'; scan: MeshData; shell: MeshData; clearanceMm: number; segments: number }
   | { id: number; op: 'clearance'; shell: MeshData; scan: MeshData }
   | { id: number; op: 'survey'; scan: MeshData; axis: Vec3 }
+  | { id: number; op: 'wand'; scan: MeshData; seedPoint: Vec3; axis: Vec3; thresholdRad: number }
   | { id: number; op: 'bestAxis'; scan: MeshData; seedAxis: Vec3 }
   | { id: number; op: 'blockout'; scan: MeshData; axis: Vec3; retentionMm: number; segments: number }
   | {
@@ -53,6 +57,15 @@ export interface BestAxisMsg {
   axis: Vec3
 }
 
+export interface WandMsg {
+  /** Selected region as triangle ids (into `indices`, per 3). */
+  faces: Uint32Array
+  /** Distinct region vertex ids — the selection overlay / shell-clip set. */
+  vertices: Uint32Array
+  /** Region boundary loops, largest first. */
+  curves: MarginCurve[]
+}
+
 export interface ShellMsg {
   mesh: MeshData
   /** Per connected-component (≈per-tooth) shell volume, mm³, descending. */
@@ -61,7 +74,7 @@ export interface ShellMsg {
 
 export type FitResponse =
   | { id: number; type: 'progress'; progress: number; stage: string }
-  | { id: number; type: 'done'; ok: true; result: MeshData | ClearanceMsg | SurveyMsg | BestAxisMsg | ShellMsg }
+  | { id: number; type: 'done'; ok: true; result: MeshData | ClearanceMsg | SurveyMsg | BestAxisMsg | ShellMsg | WandMsg }
   | { id: number; type: 'done'; ok: true; cancelled: true }
   | { id: number; type: 'done'; ok: false; error: string }
 
@@ -113,6 +126,25 @@ self.onmessage = async (ev: MessageEvent<FitRequest>) => {
           self.postMessage(
             { id: req.id, type: 'done', ok: true, result: field } satisfies FitResponse,
             { transfer: [field.values.buffer] },
+          )
+        }
+        break
+      }
+      case 'wand': {
+        const result = await wandSelect(
+          req.scan,
+          { seedPoint: req.seedPoint, axis: req.axis, thresholdRad: req.thresholdRad },
+          {
+            onProgress: (p) => progress(req.id, p, 'Growing tooth region'),
+            shouldCancel: () => cancelled.has(req.id),
+          },
+        )
+        if (!result) postCancelled(req.id)
+        else {
+          cancelled.delete(req.id)
+          self.postMessage(
+            { id: req.id, type: 'done', ok: true, result } satisfies FitResponse,
+            { transfer: [result.faces.buffer, result.vertices.buffer] },
           )
         }
         break

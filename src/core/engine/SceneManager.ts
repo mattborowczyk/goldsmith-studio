@@ -86,6 +86,9 @@ interface BrushState {
   selected: Set<number>
   /** World-space source-vertex positions, cached so each stroke move is one pass. */
   worldPos: Float32Array
+  /** Paint-on-drag armed. A passive (wand-set) selection keeps the overlay but
+   * leaves taps free for point-picking until the brush proper is armed. */
+  interactive: boolean
 }
 
 /** The draggable insertion-axis arrow overlay (plan §3.2). */
@@ -658,7 +661,7 @@ export class SceneManager {
   }
 
   private handleTap(e: PointerEvent) {
-    if (this.brush) return // brush mode consumes taps (painting), never selects
+    if (this.brush?.interactive) return // brush mode consumes taps (painting), never selects
     const ndc = this.ndcOf(e)
     this.raycaster.setFromCamera(ndc, this.activeCamera)
     const meshes = [...this.parts.values()].filter((p) => p.mesh.visible).map((p) => p.mesh)
@@ -1404,8 +1407,42 @@ export class SceneManager {
     this.clearClearanceMap()
     this.clearUndercutSurvey()
     const selected = this.brush?.id === id ? this.brush.selected : new Set<number>()
-    this.brush = { id, radius, selected, worldPos: this.worldVertexPositions(part) }
+    this.brush = { id, radius, selected, worldPos: this.worldVertexPositions(part), interactive: true }
     this.paintBrushOverlay(part)
+  }
+
+  /**
+   * Replace the painted selection with a magic-wand result (issue #48). Arms the
+   * overlay passively if the brush isn't armed: the selection shows and feeds the
+   * shell clip, but taps keep point-picking (more wand clicks) instead of painting.
+   * Re-arming the brush on the same part later keeps this selection for nudging.
+   */
+  setWandSelection(id: string, indices: Uint32Array) {
+    const part = this.parts.get(id)
+    if (!part) return
+    if (this.brush && this.brush.id !== id) this.clearBrushOverlay()
+    // mutually exclusive with the other vertex-colour overlays, like the brush
+    this.clearThicknessHeatmap()
+    this.clearClearanceMap()
+    this.clearUndercutSurvey()
+    const selected = new Set<number>()
+    for (let i = 0; i < indices.length; i++) selected.add(indices[i])
+    this.brush = {
+      id,
+      radius: this.brush?.radius ?? 1.5,
+      selected,
+      worldPos: this.brush?.worldPos ?? this.worldVertexPositions(part),
+      interactive: this.brush?.interactive ?? false,
+    }
+    this.paintBrushOverlay(part)
+    this.emit('brushSelectionChanged', selected.size)
+  }
+
+  /** Demote the brush to a passive overlay: the selection stays, painting stops. */
+  setBrushPassive() {
+    if (!this.brush) return
+    this.brush.interactive = false
+    this.painting = false
   }
 
   setBrushRadius(radius: number) {
@@ -1433,7 +1470,7 @@ export class SceneManager {
 
   /** Begin a paint stroke if the brush is armed and the pointer is over its part. */
   private tryStartPaint(e: PointerEvent): boolean {
-    if (!this.brush) return false
+    if (!this.brush || !this.brush.interactive) return false
     const part = this.parts.get(this.brush.id)
     if (!part || !part.mesh.visible) return false
     this.raycaster.setFromCamera(this.ndcOf(e), this.activeCamera)

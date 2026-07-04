@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import {
-  Box, Brush, Compass, Gauge, Layers, Loader2, Radar, RotateCcw, Scissors, Shell, Trash2, X,
+  Box, Brush, Compass, Gauge, Layers, Loader2, Radar, RotateCcw, Scissors, Shell, Trash2, Wand2, X,
 } from 'lucide-react'
 import {
   cancelFit,
@@ -22,6 +22,8 @@ import {
   setOpenGingival,
   setRetention,
   setShellThickness,
+  setWandSelect,
+  setWandThreshold,
   subtractFit,
   teardownFit,
   toggleSurvey,
@@ -306,10 +308,19 @@ function ShellSection() {
       <span className="text-xs font-medium text-muted-foreground">Shell generator</span>
       <p className="text-[11px] text-muted-foreground">
         Builds a uniform-thickness shell that follows the offset tooth surface — a clean Nomad base.
-        Brush the teeth to cover, or generate over the whole scan.
+        Pick teeth with the magic wand, brush to touch up, or generate over the whole scan.
       </p>
 
       <div className="flex gap-2">
+        <Button
+          className="flex-1"
+          variant={fit.wandActive ? 'default' : 'secondary'}
+          disabled={parts.length === 0 || fit.busy}
+          onClick={() => setWandSelect(!fit.wandActive)}
+        >
+          <Wand2 />
+          {fit.wandActive ? 'Picking teeth' : 'Pick tooth'}
+        </Button>
         <Button
           className="flex-1"
           variant={fit.brushActive ? 'default' : 'secondary'}
@@ -319,12 +330,32 @@ function ShellSection() {
           <Brush />
           {fit.brushActive ? 'Brushing region' : 'Brush region'}
         </Button>
-        {fit.brushActive && (
+        {(fit.brushActive || fit.wandActive || fit.brushCount > 0) && (
           <Button variant="ghost" size="icon" title="Clear selection" onClick={clearBrushSelection}>
             <Trash2 />
           </Button>
         )}
       </div>
+
+      {fit.wandActive && (
+        <>
+          <label className="text-xs text-muted-foreground">
+            Crease threshold{' '}
+            <span className="readout text-foreground">{fit.wandThresholdDeg.toFixed(0)}°</span>
+            <Slider
+              min={10}
+              max={80}
+              step={1}
+              value={[fit.wandThresholdDeg]}
+              onValueChange={([deg]) => setWandThreshold(deg)}
+            />
+          </label>
+          <p className="text-[10px] text-muted-foreground/70">
+            Tap a tooth to auto-select it up to the surrounding creases; drag the slider to widen or
+            narrow the last pick. {fit.brushCount} vertices selected.
+          </p>
+        </>
+      )}
 
       {fit.brushActive && (
         <>
