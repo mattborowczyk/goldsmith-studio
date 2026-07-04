@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { shellMesh } from './fitManifold'
-import { buildSelectionPrism, perToothVolumes } from './shell'
+import { marginCurvesFromSelection } from './marginCurve'
+import { buildSelectionPrism, buildSelectionPrismFromCurve, perToothVolumes } from './shell'
 import { computeThickness } from './thickness'
 import { analyzeMesh } from './meshAnalysis'
-import { invert, makeCube, mergeMeshes } from './testFixtures'
+import { invert, makeCube, makeDome, mergeMeshes } from './testFixtures'
 import type { MeshData, Vec3 } from '../types'
 
 const Y: Vec3 = [0, 1, 0]
@@ -21,32 +22,6 @@ function bounds(mesh: MeshData): { min: Vec3; max: Vec3 } {
     }
   }
   return { min, max }
-}
-
-/** Open-bottomed convex dome (single-valued along +Z) — a clean patch for the prism test. */
-function makeDome(R = 5, seg = 24, rings = 12): MeshData {
-  const verts: number[] = []
-  for (let i = 0; i < rings; i++) {
-    const beta = (Math.PI / 2) * (1 - i / rings)
-    const r = R * Math.sin(beta), z = R * Math.cos(beta)
-    for (let j = 0; j < seg; j++) {
-      const a = (2 * Math.PI * j) / seg
-      verts.push(r * Math.cos(a), r * Math.sin(a), z)
-    }
-  }
-  const apexIdx = rings * seg
-  verts.push(0, 0, R)
-  const positions = new Float32Array(verts)
-  const ring = (i: number, j: number) => i * seg + (j % seg)
-  const tris: number[] = []
-  for (let i = 0; i < rings - 1; i++) {
-    for (let j = 0; j < seg; j++) {
-      tris.push(ring(i, j), ring(i, j + 1), ring(i + 1, j + 1))
-      tris.push(ring(i, j), ring(i + 1, j + 1), ring(i + 1, j))
-    }
-  }
-  for (let j = 0; j < seg; j++) tris.push(ring(rings - 1, j), ring(rings - 1, j + 1), apexIdx)
-  return { positions, indices: new Uint32Array(tris) }
 }
 
 describe('shellMesh', () => {
@@ -138,5 +113,46 @@ describe('buildSelectionPrism', () => {
 
   it('returns null when no triangle is fully selected', () => {
     expect(buildSelectionPrism(makeDome(), new Set([0]), Z, 1)).toBeNull()
+  })
+})
+
+describe('buildSelectionPrismFromCurve (issue #47)', () => {
+  it('matches the vertex-set prism for the equivalent dome-cap margin curve', () => {
+    const seg = 24, rings = 12
+    const dome = makeDome(5, seg, rings)
+    const sel = new Set<number>()
+    for (let i = 6; i < rings; i++) for (let j = 0; j < seg; j++) sel.add(i * seg + j)
+    sel.add(rings * seg) // apex
+
+    const fromSet = buildSelectionPrism(dome, sel, Z, 1)!
+    const [curve] = marginCurvesFromSelection(dome, sel)
+    const fromCurve = buildSelectionPrismFromCurve(dome, curve, Z, 1)!
+    expect(fromCurve).not.toBeNull()
+
+    const a = analyzeMesh(fromSet)
+    const b = analyzeMesh(fromCurve)
+    expect(b.boundaryEdges).toBe(0) // closed, like the brush prism
+    expect(b.volume).toBeCloseTo(a.volume, 3)
+
+    const ba = bounds(fromSet)
+    const bb = bounds(fromCurve)
+    for (let k = 0; k < 3; k++) {
+      expect(bb.min[k]).toBeCloseTo(ba.min[k], 4)
+      expect(bb.max[k]).toBeCloseTo(ba.max[k], 4)
+    }
+  })
+
+  it('matches the vertex-set prism on a cube-top selection', () => {
+    const cube = makeCube(10)
+    const sel = new Set<number>([4, 5, 6, 7])
+    const fromSet = buildSelectionPrism(cube, sel, Z, 1)!
+    const [curve] = marginCurvesFromSelection(cube, sel)
+    const fromCurve = buildSelectionPrismFromCurve(cube, curve, Z, 1)!
+
+    expect(analyzeMesh(fromCurve).volume).toBeCloseTo(analyzeMesh(fromSet).volume, 5)
+  })
+
+  it('returns null for a curve that encloses nothing', () => {
+    expect(buildSelectionPrismFromCurve(makeDome(), { points: [] }, Z, 1)).toBeNull()
   })
 })

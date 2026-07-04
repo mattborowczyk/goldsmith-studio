@@ -1,5 +1,7 @@
-import type { MeshData, Vec3 } from '../types'
+import type { MarginCurve, MeshData, Vec3 } from '../types'
+import { enclosedFaceSet, fullySelectedFaces } from './marginCurve'
 import { computeShells, shellVolumes } from './meshAnalysis'
+import { unit } from './vec'
 
 /**
  * Brush-selection → closed "selection prism" (plan §3.3). The surface brush paints
@@ -20,16 +22,33 @@ import { computeShells, shellVolumes } from './meshAnalysis'
 export function buildSelectionPrism(
   scan: MeshData, selected: Set<number>, axis: Vec3, cap: number,
 ): MeshData | null {
-  const { positions, indices } = scan
+  // selected faces: all three vertices brushed (a tight region matching the paint)
+  return buildPrismFromFaces(scan, fullySelectedFaces(scan, selected), axis, cap)
+}
+
+/**
+ * Curve counterpart of `buildSelectionPrism` (issue #47): the region is the
+ * face set enclosed by an editable `MarginCurve` (see `enclosedFaceSet`)
+ * instead of a brushed vertex set. Same prism construction, same consumers.
+ */
+export function buildSelectionPrismFromCurve(
+  scan: MeshData, curve: MarginCurve, axis: Vec3, cap: number,
+): MeshData | null {
+  const { indices } = scan
+  const enclosed = enclosedFaceSet(scan, curve, axis)
+  const faces: number[] = []
+  for (const t of enclosed) faces.push(indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2])
+  return buildPrismFromFaces(scan, faces, axis, cap)
+}
+
+/** Shared prism extrusion over a face patch (flat vertex triples). */
+function buildPrismFromFaces(
+  scan: MeshData, faces: number[], axis: Vec3, cap: number,
+): MeshData | null {
+  const { positions } = scan
   const a = unit(axis)
   const dot = (i: number) => positions[i] * a[0] + positions[i + 1] * a[1] + positions[i + 2] * a[2]
 
-  // selected faces: all three vertices brushed (a tight region matching the paint)
-  const faces: number[] = []
-  for (let t = 0; t < indices.length; t += 3) {
-    const i0 = indices[t], i1 = indices[t + 1], i2 = indices[t + 2]
-    if (selected.has(i0) && selected.has(i1) && selected.has(i2)) faces.push(i0, i1, i2)
-  }
   if (faces.length === 0) return null
 
   // the two cap planes: above the highest selected point, below the scan's base
@@ -96,11 +115,6 @@ export function buildSelectionPrism(
     tris.push(top(u), bot(w), bot(u))
   }
   return { positions: verts, indices: new Uint32Array(tris) }
-}
-
-function unit(v: Vec3): Vec3 {
-  const len = Math.hypot(v[0], v[1], v[2])
-  return len > 0 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 1, 0]
 }
 
 /**
