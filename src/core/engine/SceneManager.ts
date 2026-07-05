@@ -3,16 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import {
-  BloomEffect,
-  EffectComposer,
-  EffectPass,
-  RenderPass,
-  SMAAEffect,
-  ToneMappingEffect,
-  ToneMappingMode,
-} from 'postprocessing'
-import { N8AOPostPass } from 'n8ao'
+import { PostProcessingManager } from './PostProcessingManager'
 import type {
   AnalysisReport,
   DisplayMode,
@@ -137,8 +128,7 @@ const CREASE_ANGLE = THREE.MathUtils.degToRad(38)
 export class SceneManager {
   readonly scene = new THREE.Scene()
   private renderer: THREE.WebGLRenderer
-  private composer: EffectComposer | null = null
-  private postEnabled = true
+  private postFX = new PostProcessingManager()
   private perspCamera: THREE.PerspectiveCamera
   private orthoCamera: THREE.OrthographicCamera
   private activeCamera: THREE.Camera
@@ -328,40 +318,17 @@ export class SceneManager {
   // ---------- post-processing ----------
 
   private buildComposer() {
-    this.composer?.dispose()
     const w = this.container.clientWidth || 1
     const h = this.container.clientHeight || 1
-    this.composer = new EffectComposer(this.renderer, {
-      frameBufferType: THREE.HalfFloatType,
-    })
-    this.composer.addPass(new RenderPass(this.scene, this.activeCamera))
-
-    const n8ao = new N8AOPostPass(this.scene, this.activeCamera, w, h)
-    n8ao.configuration.aoRadius = 2.5
-    n8ao.configuration.distanceFalloff = 4.0
-    n8ao.configuration.intensity = 4.0
-    n8ao.setQualityMode('High')
-    this.composer.addPass(n8ao)
-
-    const bloom = new BloomEffect({
-      luminanceThreshold: 1.0,
-      luminanceSmoothing: 0.6,
-      intensity: 0.5,
-      mipmapBlur: true,
-    })
-    const toneMapping = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC })
-    this.composer.addPass(new EffectPass(this.activeCamera, bloom, new SMAAEffect(), toneMapping))
-    this.composer.setSize(w, h)
+    this.postFX.build(this.renderer, this.scene, this.activeCamera, w, h)
   }
 
   setPostFX(enabled: boolean) {
-    this.postEnabled = enabled
-    // fallback path needs renderer-side tone mapping
-    this.renderer.toneMapping = enabled ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping
+    this.postFX.setEnabled(enabled, this.renderer)
   }
 
   getPostFX(): boolean {
-    return this.postEnabled
+    return this.postFX.getEnabled()
   }
 
   // ---------- events ----------
@@ -1769,13 +1736,13 @@ export class SceneManager {
 
     this.renderer.setPixelRatio(1)
     this.renderer.setSize(outW, outH, false)
-    this.composer?.setSize(outW, outH, false)
+    this.postFX.setSize(outW, outH, false)
     this.renderScene()
     const url = this.renderer.domElement.toDataURL('image/png')
 
     this.renderer.setPixelRatio(prevPixelRatio)
     this.renderer.setSize(w, h)
-    this.composer?.setSize(w, h)
+    this.postFX.setSize(w, h)
     hidden.forEach((o, i) => (o.visible = prevVisible[i]))
     return url
   }
@@ -1822,8 +1789,9 @@ export class SceneManager {
   // ---------- loop & lifecycle ----------
 
   private renderScene() {
-    if (this.postEnabled && this.composer) this.composer.render()
-    else this.renderer.render(this.scene, this.activeCamera)
+    if (!this.postFX.render()) {
+      this.renderer.render(this.scene, this.activeCamera)
+    }
   }
 
   private renderFrame() {
@@ -1850,7 +1818,7 @@ export class SceneManager {
     const w = this.container.clientWidth || 1
     const h = this.container.clientHeight || 1
     this.renderer.setSize(w, h)
-    this.composer?.setSize(w, h)
+    this.postFX.setSize(w, h)
     this.perspCamera.aspect = w / h
     this.perspCamera.updateProjectionMatrix()
     const halfH = this.orthoCamera.top
@@ -1873,7 +1841,7 @@ export class SceneManager {
     for (const mat of this.matCache.values()) mat.dispose()
     this.matCache.clear()
     this.backMaterial.dispose()
-    this.composer?.dispose()
+    this.postFX.dispose()
     this.controls.dispose()
     this.gizmo.dispose()
     this.backgroundTexture?.dispose()

@@ -111,3 +111,27 @@ export async function shareFiles(
     return false
   }
 }
+
+export async function deliverFiles(
+  built: { data: SaveData; name: string; mime: string }[],
+  opts: { share?: boolean; title?: string; type?: SaveType } = {},
+) {
+  if (opts.share && built.length === 1) {
+    const f = built[0]
+    if (await shareFiles(f.data, f.name, f.mime, opts.title)) return
+  }
+  for (const f of built) await saveFile(f.data, f.name, f.mime, opts.type)
+}
+
+export function dataURLtoBytes(url: string): Uint8Array {
+  const base64 = url.slice(url.indexOf(',') + 1)
+  const bin = atob(base64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return bytes
+}
+
+export function safeFilename(name: string): string {
+  return name.trim().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'goldsmith'
+}
+
