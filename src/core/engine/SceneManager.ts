@@ -1417,9 +1417,9 @@ export class SceneManager {
    * shell clip, but taps keep point-picking (more wand clicks) instead of painting.
    * Re-arming the brush on the same part later keeps this selection for nudging.
    */
-  setWandSelection(id: string, indices: Uint32Array) {
+  setWandSelection(id: string, indices: Uint32Array): boolean {
     const part = this.parts.get(id)
-    if (!part) return
+    if (!part) return false
     if (this.brush && this.brush.id !== id) this.clearBrushOverlay()
     // mutually exclusive with the other vertex-colour overlays, like the brush
     this.clearThicknessHeatmap()
@@ -1436,6 +1436,7 @@ export class SceneManager {
     }
     this.paintBrushOverlay(part)
     this.emit('brushSelectionChanged', selected.size)
+    return true
   }
 
   /** Demote the brush to a passive overlay: the selection stays, painting stops. */

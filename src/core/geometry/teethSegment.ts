@@ -179,6 +179,7 @@ export async function wandSelect(
     const cz = (positions[i0 * 3 + 2] + positions[i1 * 3 + 2] + positions[i2 * 3 + 2]) / 3 - sz
     const d = cx * cx + cy * cy + cz * cz
     if (d < bestD) { bestD = d; seedFace = t }
+    if (yieldEvery > 0 && ++work % yieldEvery === 0 && (await pause())) return null
   }
   if (seedFace < 0) {
     // the nearest vertex is dangling (referenced by no face) — nothing to grow

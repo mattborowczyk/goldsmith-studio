@@ -1584,6 +1584,10 @@ export function setWandSelect(on: boolean): void {
     store.patchFit({ wandActive: true, brushActive: false, scanPartId: id, error: null })
   } else {
     if (pickConsumer === 'wand') pickConsumer = null
+    // drop any pending re-grow so a stale runWand can't fire after disarm and
+    // overwrite the current selection (mirrors teardownFit/reset cleanup)
+    if (wandDebounce) { clearTimeout(wandDebounce); wandDebounce = null }
+    wandSeed = null
     eng.setPickMode(false)
     eng.setGizmoMode(store.gizmoMode)
     store.patchFit({ wandActive: false })
@@ -1636,7 +1640,11 @@ async function runWand(seed: Vec3): Promise<void> {
       })
       return
     }
-    getEngine().setWandSelection(scan.id, result.vertices)
+    if (!getEngine().setWandSelection(scan.id, result.vertices)) {
+      // the scan part vanished mid-flight — nothing painted, so don't commit its curves
+      useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+      return
+    }
     // the wand overlay replaced any heatmap/clearance/survey paint — keep the store in sync
     const st = useAppStore.getState()
     if (st.measure.heatmap.enabled) {

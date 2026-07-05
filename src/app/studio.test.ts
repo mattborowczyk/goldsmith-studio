@@ -135,7 +135,7 @@ class FakeSceneManager {
   hideInsertionAxis = vi.fn()
   setBrushSelect = vi.fn()
   setBrushPassive = vi.fn()
-  setWandSelection = vi.fn()
+  setWandSelection = vi.fn(() => true)
   setGizmoMode = vi.fn()
   setPickMode = vi.fn()
   setResizeOverlay = vi.fn()
