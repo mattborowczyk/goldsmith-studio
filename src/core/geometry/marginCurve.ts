@@ -51,23 +51,40 @@ export function marginCurvesFromSelection(scan: MeshData, selected: Set<number>)
     }
   }
 
-  // directed boundary edges (used by exactly one selected face) + their face.
-  // A vertex can start SEVERAL boundary edges (a pinch — two regions or an
-  // hourglass region sharing one vertex), so successors are lists and loops
-  // are walked per directed edge, consuming each edge exactly once.
-  const outEdges = new Map<number, { w: number; face: number; used: boolean }[]>()
-  let edgeCount = 0
+  // directed boundary edges (used by exactly one selected face) + their face
+  const edges: BoundaryEdge[] = []
   for (let f = 0; f < faces.length; f += 3) {
     for (let e = 0; e < 3; e++) {
       const u = faces[f + e]
       const w = faces[f + ((e + 1) % 3)]
-      if (counts.get(key(u, w)) === 1) {
-        let list = outEdges.get(u)
-        if (!list) outEdges.set(u, (list = []))
-        list.push({ w, face: f / 3, used: false })
-        edgeCount++
-      }
+      if (counts.get(key(u, w)) === 1) edges.push({ u, v: w, face: f / 3 })
     }
+  }
+  return traceBoundaryLoops(positions, edges)
+}
+
+/** A directed boundary edge (u→v as its owning face traverses it) + that face.
+ * The face id lives in whatever space the caller uses (region ordinal here,
+ * global triangle id in the wand) — it is copied verbatim onto the control point. */
+export interface BoundaryEdge {
+  u: number
+  v: number
+  face: number
+}
+
+/**
+ * Walk directed boundary edges into closed margin curves, one per loop, largest
+ * first. A vertex can start SEVERAL boundary edges (a pinch — two regions or an
+ * hourglass region sharing one vertex), so successors are lists and loops are
+ * walked per directed edge, consuming each edge exactly once. Open chains
+ * (non-manifold input) are skipped.
+ */
+export function traceBoundaryLoops(positions: Float32Array, edges: BoundaryEdge[]): MarginCurve[] {
+  const outEdges = new Map<number, { w: number; face: number; used: boolean }[]>()
+  for (const { u, v, face } of edges) {
+    let list = outEdges.get(u)
+    if (!list) outEdges.set(u, (list = []))
+    list.push({ w: v, face, used: false })
   }
 
   const curves: MarginCurve[] = []
@@ -78,7 +95,7 @@ export function marginCurvesFromSelection(scan: MeshData, selected: Set<number>)
       const faceAlong: number[] = []
       let u = start
       let edge: { w: number; face: number; used: boolean } | undefined = first
-      let guard = edgeCount + 1
+      let guard = edges.length + 1
       while (edge && !edge.used && guard-- > 0) {
         edge.used = true
         loop.push(u)

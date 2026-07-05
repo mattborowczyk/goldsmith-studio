@@ -90,7 +90,7 @@ let engine: SceneManager | null = null
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let nextPartNum = 1
 /** Which tab armed the shared pick mode — routes the pointPicked event. */
-let pickConsumer: 'measure' | 'resize' | null = null
+let pickConsumer: 'measure' | 'resize' | 'wand' | null = null
 /** Non-destructive heal/resize: previous geometry+transform per part, newest last. */
 const revisions = new Map<string, { data: MeshData; matrix: number[] }[]>()
 /** In-flight wall-thickness compute, so the UI can cancel it. */
@@ -99,6 +99,10 @@ let thicknessJob: ThicknessJob | null = null
 let fitJob: FitJob<unknown> | null = null
 /** Debounce timer coalescing survey recomputes during an axis-gizmo drag. */
 let surveyDebounce: ReturnType<typeof setTimeout> | null = null
+/** Last magic-wand pick point, so the threshold slider can re-grow it (issue #48). */
+let wandSeed: Vec3 | null = null
+/** Debounce timer coalescing wand re-runs during a threshold-slider drag. */
+let wandDebounce: ReturnType<typeof setTimeout> | null = null
 /** Facet count of the Minkowski offset ball — coarse: a thin uniform gap needs no smooth sphere. */
 const FIT_SPHERE_SEGMENTS = 16
 
@@ -113,7 +117,7 @@ const FIT_SPHERE_SEGMENTS = 16
 interface StudioClients {
   fit: Pick<
     typeof fitClient,
-    'offset' | 'subtract' | 'clearance' | 'survey' | 'bestAxis' | 'blockout' | 'shell'
+    'offset' | 'subtract' | 'clearance' | 'survey' | 'wand' | 'bestAxis' | 'blockout' | 'shell'
   >
   thickness: Pick<typeof thicknessClient, 'compute'>
   repair: Pick<typeof repairClient, 'analyze' | 'heal' | 'split' | 'baseCapInfo' | 'baseCap'>
@@ -191,6 +195,14 @@ function handlePartsChanged() {
   // and for the brush-select (its scan part removed/replaced → disarm + drop the overlay)
   if (s.fit.brushActive && !eng.hasBrushSelect()) {
     s.patchFit({ brushActive: false, brushCount: 0 })
+  }
+  // and for the wand: scan gone → stop picking; selection gone → drop its curves
+  if (s.fit.wandActive && s.fit.scanPartId && !eng.listParts().some((p) => p.id === s.fit.scanPartId)) {
+    setWandSelect(false)
+  }
+  if ((s.fit.marginCurves || s.fit.brushCount > 0) && !eng.hasBrushSelect()) {
+    wandSeed = null
+    s.patchFit({ marginCurves: null, brushCount: 0 })
   }
   scheduleAutosave()
   if (s.tab === 'cost') scheduleVolumeRecompute()
@@ -862,6 +874,10 @@ export function formatMoney(value: number, currency: Currency): string {
 // ---------- measurements & sections (plan §2.3) ----------
 
 function handlePointPicked(point: Vec3) {
+  if (pickConsumer === 'wand') {
+    void runWand(point)
+    return
+  }
   if (pickConsumer === 'resize') {
     handleResizePointPicked(point)
     return
@@ -1264,8 +1280,11 @@ export function clearFitMap() {
 /** Tear the fit overlay + any in-flight job down when leaving the Fit tab. */
 export function teardownFit() {
   const f = useAppStore.getState().fit
-  if (fitJob || f.mapEnabled || f.surveyEnabled || f.brushActive) {
+  if (fitJob || f.mapEnabled || f.surveyEnabled || f.brushActive || f.wandActive || f.marginCurves) {
     if (surveyDebounce) { clearTimeout(surveyDebounce); surveyDebounce = null }
+    if (wandDebounce) { clearTimeout(wandDebounce); wandDebounce = null }
+    wandSeed = null
+    if (pickConsumer === 'wand') { pickConsumer = null; engine?.setPickMode(false) }
     fitJob?.cancel()
     fitJob = null
     clearFitMap()
@@ -1276,6 +1295,7 @@ export function teardownFit() {
       busy: false, progress: 0, stage: null,
       surveyEnabled: false, undercutArea: null, surveyPartId: null,
       brushActive: false, brushCount: 0,
+      wandActive: false, marginCurves: null,
     })
   }
 }
@@ -1514,8 +1534,9 @@ export function setBrushSelect(on: boolean): void {
       store.patchFit({ error: 'Select the tooth scan first.' })
       return
     }
+    if (store.fit.wandActive) setWandSelect(false) // one selection tool at a time
     const eng = getEngine()
-    eng.setBrushSelect(id, store.fit.brushRadiusMm)
+    eng.setBrushSelect(id, store.fit.brushRadiusMm) // keeps a same-part wand selection for nudging
     eng.setGizmoMode('none') // park the transform gizmo so painting doesn't grab a handle
     store.patchFit({ brushActive: true, scanPartId: id, error: null })
   } else {
@@ -1532,9 +1553,117 @@ export function setBrushRadius(mm: number): void {
   engine?.setBrushRadius(mm)
 }
 
-/** Empty the painted region (keeps the brush armed). */
+/** Empty the painted region (keeps the brush/wand armed) + drop the margin curves. */
 export function clearBrushSelection(): void {
   getEngine().clearBrushSelection()
+  wandSeed = null
+  useAppStore.getState().patchFit({ marginCurves: null })
+}
+
+// ---------- magic-wand tooth pick (issue #48) ----------
+
+/**
+ * Arm/disarm the magic wand: taps on the scan point-pick a seed, the worker
+ * grows the tooth region up to the surrounding creases, and the result lands
+ * in the shared brush selection (so the shell clip and a later brush nudge
+ * both see it) plus `fit.marginCurves` for the boundary editing to come (#49).
+ */
+export function setWandSelect(on: boolean): void {
+  const store = useAppStore.getState()
+  const eng = getEngine()
+  if (on) {
+    const id = fitScanId()
+    if (!id) {
+      store.patchFit({ error: 'Select the tooth scan first.' })
+      return
+    }
+    if (store.fit.brushActive) eng.setBrushPassive() // stop painting; keep the selection
+    pickConsumer = 'wand'
+    eng.setPickMode(true)
+    eng.setGizmoMode('none') // park the gizmo while picking, like the measure tool
+    store.patchFit({ wandActive: true, brushActive: false, scanPartId: id, error: null })
+  } else {
+    if (pickConsumer === 'wand') pickConsumer = null
+    // drop any pending re-grow so a stale runWand can't fire after disarm and
+    // overwrite the current selection (mirrors teardownFit/reset cleanup)
+    if (wandDebounce) { clearTimeout(wandDebounce); wandDebounce = null }
+    wandSeed = null
+    eng.setPickMode(false)
+    eng.setGizmoMode(store.gizmoMode)
+    store.patchFit({ wandActive: false })
+  }
+}
+
+/** Wand crease threshold (degrees); re-grows the last pick as the slider moves. */
+export function setWandThreshold(deg: number): void {
+  if (!Number.isFinite(deg)) return
+  useAppStore.getState().patchFit({ wandThresholdDeg: deg })
+  if (!wandSeed) return
+  if (wandDebounce) clearTimeout(wandDebounce)
+  wandDebounce = setTimeout(() => {
+    wandDebounce = null
+    if (wandSeed) void runWand(wandSeed)
+  }, 150)
+}
+
+/**
+ * Grow the tooth region from a picked point in the fit worker and apply it:
+ * the vertex set becomes the (passive) brush selection, the boundary loops the
+ * margin curves. Uses the surveyed insertion axis when one is set, else the
+ * scan's default, for the gum-guard height cue.
+ */
+async function runWand(seed: Vec3): Promise<void> {
+  const scan = surveyScan()
+  if (!scan) return
+  wandSeed = seed
+  const f = useAppStore.getState().fit
+  const axis = f.surveyEnabled ? f.insertionAxis : defaultInsertionAxis(scan.mesh)
+  const thresholdRad = (f.wandThresholdDeg * Math.PI) / 180
+  fitJob?.cancel()
+  useAppStore.getState().patchFit({ busy: true, progress: 0, stage: 'Growing tooth region', error: null })
+  const job = clients.fit.wand(scan.mesh, seed, axis, thresholdRad, (p, stage) =>
+    useAppStore.getState().patchFit({ progress: p, stage }),
+  )
+  fitJob = job
+  try {
+    const result = await job.promise
+    if (fitJob !== job) return // superseded / cancelled
+    fitJob = null
+    if (!result) {
+      useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+      return
+    }
+    if (result.faces.length === 0) {
+      useAppStore.getState().patchFit({
+        busy: false, progress: 0, stage: null,
+        error: 'No tooth region found there — tap directly on the scan surface.',
+      })
+      return
+    }
+    if (!getEngine().setWandSelection(scan.id, result.vertices)) {
+      // the scan part vanished mid-flight — nothing painted, so don't commit its curves
+      useAppStore.getState().patchFit({ busy: false, progress: 0, stage: null })
+      return
+    }
+    // the wand overlay replaced any heatmap/clearance/survey paint — keep the store in sync
+    const st = useAppStore.getState()
+    if (st.measure.heatmap.enabled) {
+      st.patchHeatmap({ enabled: false, busy: false, progress: 0, range: null, partId: null, error: null })
+    }
+    if (st.fit.mapEnabled) st.patchFit({ mapEnabled: false, mapRange: null, mapPartId: null })
+    if (st.fit.surveyEnabled) {
+      engine?.hideInsertionAxis()
+      st.patchFit({ surveyEnabled: false, undercutArea: null, surveyPartId: null })
+    }
+    useAppStore.getState().patchFit({
+      busy: false, progress: 1, stage: null,
+      marginCurves: result.curves, scanPartId: scan.id,
+    })
+  } catch (err) {
+    if (fitJob !== job) return
+    fitJob = null
+    useAppStore.getState().patchFit({ busy: false, stage: null, error: fitErrorMessage(err) })
+  }
 }
 
 /** Uniform shell wall thickness (mm), clamped to the grillz range. */
@@ -2255,6 +2384,10 @@ export const __studioTestSeams = {
   firePartsChanged() {
     handlePartsChanged()
   },
+  /** Invoke the `pointPicked` routing exactly as initEngine wires it. */
+  firePointPicked(point: Vec3) {
+    handlePointPicked(point)
+  },
   /** Restore pristine module state (engine, clients, timers, jobs, revisions). */
   reset() {
     engine = null
@@ -2263,6 +2396,8 @@ export const __studioTestSeams = {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
     if (volumeTimer) { clearTimeout(volumeTimer); volumeTimer = null }
     if (surveyDebounce) { clearTimeout(surveyDebounce); surveyDebounce = null }
+    if (wandDebounce) { clearTimeout(wandDebounce); wandDebounce = null }
+    wandSeed = null
     // abort any in-flight job before dropping its handle, so a test that exits
     // mid-job doesn't leak worker work past cleanup
     fitJob?.cancel()

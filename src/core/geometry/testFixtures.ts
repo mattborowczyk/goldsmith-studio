@@ -193,6 +193,64 @@ export function makeBulgedStud(opts: {
   return { positions, indices: new Uint32Array(tris) }
 }
 
+/**
+ * Two spherical-cap "teeth" on a shared flat base — the two-bump companion to
+ * makeBulgedStud, for the magic-wand tests (issue #48). A regular grid
+ * heightfield (alternating cell diagonals, so crease detection isn't biased
+ * along one diagonal): z(x, y) is the taller of two caps, each a sphere of
+ * radius `R` sunk so it stands `h` proud of the base, centred at (±sep/2, 0).
+ * Each cap meets the base in a ring of concave crease at foot radius
+ * √(R² − (R−h)²) with contact angle atan(rFoot / (R−h)) — steep for tall caps,
+ * soft for shallow ones — so tests can put the wand threshold on either side
+ * of it. Open underside (like an intraoral scan), outward normals +Z, mm.
+ */
+export function makeTwoBumpBase(opts: {
+  /** Base extent along x (mm). */ width?: number
+  /** Base extent along y (mm). */ depth?: number
+  /** Grid cells along x (y gets a proportional count). */ nx?: number
+  /** Sphere radius of each cap (mm). */ R?: number
+  /** Cap height proud of the base (mm, < R). */ h?: number
+  /** Cap centre spacing: centres sit at x = ±sep/2. */ sep?: number
+} = {}): MeshData {
+  const width = opts.width ?? 32
+  const depth = opts.depth ?? 16
+  const nx = opts.nx ?? 96
+  const R = opts.R ?? 6
+  const h = opts.h ?? 5.5
+  const sep = opts.sep ?? 16
+  const ny = Math.max(2, Math.round((nx * depth) / width))
+
+  const cap = (dx: number, dy: number): number => {
+    const s = R * R - dx * dx - dy * dy
+    return s > 0 ? Math.max(0, Math.sqrt(s) - (R - h)) : 0
+  }
+  const positions = new Float32Array((nx + 1) * (ny + 1) * 3)
+  for (let j = 0; j <= ny; j++) {
+    const y = -depth / 2 + (depth * j) / ny
+    for (let i = 0; i <= nx; i++) {
+      const x = -width / 2 + (width * i) / nx
+      const p = (j * (nx + 1) + i) * 3
+      positions[p] = x
+      positions[p + 1] = y
+      positions[p + 2] = Math.max(cap(x - sep / 2, y), cap(x + sep / 2, y))
+    }
+  }
+
+  const tris: number[] = []
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const a = j * (nx + 1) + i
+      const b = a + 1
+      const c = b + (nx + 1)
+      const d = a + (nx + 1)
+      // CCW seen from +z; alternate the diagonal per cell (union-jack)
+      if ((i + j) % 2 === 0) tris.push(a, b, c, a, c, d)
+      else tris.push(a, b, d, b, c, d)
+    }
+  }
+  return { positions, indices: new Uint32Array(tris) }
+}
+
 /** Open-bottomed convex dome (single-valued along +Z) — a clean patch for selection tests. */
 export function makeDome(R = 5, seg = 24, rings = 12): MeshData {
   const verts: number[] = []

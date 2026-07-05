@@ -1,5 +1,5 @@
-import type { MeshData, Vec3 } from '../types'
-import type { BestAxisMsg, ClearanceMsg, FitRequest, FitResponse, ShellMsg, SurveyMsg } from './fit.worker'
+import type { MarginCurve, MeshData, Vec3 } from '../types'
+import type { BestAxisMsg, ClearanceMsg, FitRequest, FitResponse, ShellMsg, SurveyMsg, WandMsg } from './fit.worker'
 
 export interface ClearanceResult {
   values: Float32Array
@@ -14,6 +14,12 @@ export interface SurveyResult {
 
 export interface BestAxisResult {
   axis: Vec3
+}
+
+export interface WandSelectionResult {
+  faces: Uint32Array
+  vertices: Uint32Array
+  curves: MarginCurve[]
 }
 
 export interface ShellResult {
@@ -124,6 +130,18 @@ class FitClient {
       [s.positions.buffer, s.indices.buffer],
       onProgress,
     ) as FitJob<SurveyResult>
+  }
+
+  /** Magic-wand tooth pick: region-grow from a clicked point up to the creases. */
+  wand(
+    scan: MeshData, seedPoint: Vec3, axis: Vec3, thresholdRad: number, onProgress?: FitProgress,
+  ): FitJob<WandSelectionResult> {
+    const s = clone(scan)
+    return this.start<WandMsg>(
+      { op: 'wand', scan: s, seedPoint, axis, thresholdRad },
+      [s.positions.buffer, s.indices.buffer],
+      onProgress,
+    ) as FitJob<WandSelectionResult>
   }
 
   /** Search the insertion axis minimising undercut area (around a seed axis). */

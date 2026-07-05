@@ -7,6 +7,7 @@ import type {
   FitJob,
   ShellResult,
   SurveyResult,
+  WandSelectionResult,
 } from '@/core/geometry/fitClient'
 import type { ThicknessJob, ThicknessResult } from '@/core/geometry/thicknessClient'
 import type { HealOutcome } from '@/core/geometry/repairClient'
@@ -27,7 +28,9 @@ import {
   teardownResize,
   undoHeal,
   undoResize,
+  setBrushSelect as setBrushSelectStudio,
   setResizePicking,
+  setWandSelect,
   updateBaseCap,
 } from '@/app/studio'
 
@@ -66,6 +69,7 @@ function fakeFitClient() {
     bestAxis: [] as Deferred<BestAxisResult>[],
     blockout: [] as Deferred<MeshData>[],
     shell: [] as Deferred<ShellResult>[],
+    wand: [] as Deferred<WandSelectionResult>[],
   }
   const hand = <T>(bucket: Deferred<T>[]): FitJob<T> => {
     const d = makeJob<T>()
@@ -80,6 +84,7 @@ function fakeFitClient() {
     bestAxis: vi.fn((): FitJob<BestAxisResult> => hand(jobs.bestAxis)),
     blockout: vi.fn((): FitJob<MeshData> => hand(jobs.blockout)),
     shell: vi.fn((): FitJob<ShellResult> => hand(jobs.shell)),
+    wand: vi.fn((): FitJob<WandSelectionResult> => hand(jobs.wand)),
   }
   return { client, jobs }
 }
@@ -129,6 +134,8 @@ class FakeSceneManager {
   clearUndercutSurvey = vi.fn()
   hideInsertionAxis = vi.fn()
   setBrushSelect = vi.fn()
+  setBrushPassive = vi.fn()
+  setWandSelection = vi.fn(() => true)
   setGizmoMode = vi.fn()
   setPickMode = vi.fn()
   setResizeOverlay = vi.fn()
@@ -612,5 +619,74 @@ describe('partsChanged reconcile', () => {
     expect(f.surveyEnabled).toBe(true)
     expect(f.brushActive).toBe(true)
     expect(fake.hideInsertionAxis).not.toHaveBeenCalled()
+  })
+})
+
+// ---------- magic-wand tooth pick (issue #48) ----------
+
+describe('magic-wand tooth pick', () => {
+  it('arms pick mode, and a pick applies the selection + margin curves', async () => {
+    const fake = installEngine()
+    fake.addPart('scan', 'Scan', makeCube())
+    const { client, jobs } = fakeFitClient()
+    seams.setClients({ fit: client })
+    useAppStore.setState({ selectedId: 'scan' })
+
+    setWandSelect(true)
+    expect(fake.setPickMode).toHaveBeenCalledWith(true)
+    expect(useAppStore.getState().fit.wandActive).toBe(true)
+
+    seams.firePointPicked([1, 2, 3])
+    expect(client.wand).toHaveBeenCalledTimes(1)
+    expect(useAppStore.getState().fit.busy).toBe(true)
+
+    const curves = [{ points: [] }]
+    const result = {
+      faces: new Uint32Array([0, 1]),
+      vertices: new Uint32Array([0, 1, 2, 3]),
+      curves,
+    }
+    jobs.wand[0].resolve(result)
+    await vi.waitFor(() => expect(useAppStore.getState().fit.busy).toBe(false))
+
+    expect(fake.setWandSelection).toHaveBeenCalledWith('scan', result.vertices)
+    expect(useAppStore.getState().fit.marginCurves).toBe(curves)
+
+    setWandSelect(false)
+    expect(fake.setPickMode).toHaveBeenCalledWith(false)
+    expect(useAppStore.getState().fit.wandActive).toBe(false)
+  })
+
+  it('surfaces an empty grow as an actionable error, not a selection', async () => {
+    const fake = installEngine()
+    fake.addPart('scan', 'Scan', makeCube())
+    const { client, jobs } = fakeFitClient()
+    seams.setClients({ fit: client })
+    useAppStore.setState({ selectedId: 'scan' })
+
+    setWandSelect(true)
+    seams.firePointPicked([0, 0, 0])
+    expect(client.wand).toHaveBeenCalledTimes(1)
+    jobs.wand[0].resolve({ faces: new Uint32Array(0), vertices: new Uint32Array(0), curves: [] })
+    await vi.waitFor(() => expect(useAppStore.getState().fit.busy).toBe(false))
+
+    expect(fake.setWandSelection).not.toHaveBeenCalled()
+    expect(useAppStore.getState().fit.marginCurves).toBeNull()
+    expect(useAppStore.getState().fit.error).toMatch(/No tooth region/)
+  })
+
+  it('arming the brush disarms wand picking but keeps the selection passive-ready', () => {
+    const fake = installEngine()
+    fake.addPart('scan', 'Scan', makeCube())
+    useAppStore.setState({ selectedId: 'scan' })
+
+    setWandSelect(true)
+    setBrushSelectStudio(true)
+
+    const f = useAppStore.getState().fit
+    expect(f.wandActive).toBe(false)
+    expect(f.brushActive).toBe(true)
+    expect(fake.setPickMode).toHaveBeenLastCalledWith(false)
+    expect(fake.setBrushSelect).toHaveBeenCalledWith('scan', f.brushRadiusMm)
   })
 })

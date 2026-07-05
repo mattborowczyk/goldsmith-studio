@@ -4,6 +4,7 @@ import type {
   DisplayMode,
   GizmoMode,
   HealOptions,
+  MarginCurve,
   Measurement,
   PartInfo,
   Projection,
@@ -177,6 +178,12 @@ export interface FitState {
   brushRadiusMm: number
   /** Count of brushed scan vertices — drives the "selection ready" affordance. */
   brushCount: number
+  /** Magic-wand tooth pick is armed (tap a tooth to auto-select it, issue #48). */
+  wandActive: boolean
+  /** Wand crease threshold (degrees of concave fold) — widens/narrows the pick. */
+  wandThresholdDeg: number
+  /** Margin curves traced by the last wand pick — the editable boundary (#49). */
+  marginCurves: MarginCurve[] | null
   /** Uniform shell wall thickness (mm). */
   shellThicknessMm: number
   /** Trim the shell at the scan base, opening the cavity at the gingival margin. */
@@ -377,6 +384,9 @@ export const useAppStore = create<AppState>((set) => ({
     brushActive: false,
     brushRadiusMm: 1.5,
     brushCount: 0,
+    wandActive: false,
+    wandThresholdDeg: 35,
+    marginCurves: null,
     shellThicknessMm: 1.0,
     openGingival: true,
     toothWeights: null,
