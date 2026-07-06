@@ -131,15 +131,18 @@ export async function exportMesh(opts: { share?: boolean } = {}): Promise<void> 
     store.patchDeliver({ error: 'Shrinkage % must be greater than −100.' })
     return
   }
-  const prepared = preparedMeshes()
-  if (!prepared.length) {
-    store.patchDeliver({ error: 'Nothing to export — import or generate a part first.' })
-    return
-  }
   store.patchDeliver({ exporting: true, error: null })
-  const base = safeFilename(d.title || 'goldsmith-export')
-  const mime = MESH_MIME[d.exportFormat]
   try {
+    // Build the prepared list inside the try — preparedMeshes() calls getEngine(),
+    // so an unavailable engine routes through the normal error path instead of
+    // rejecting the fire-and-forget exportMesh() with store.error unset.
+    const prepared = preparedMeshes()
+    if (!prepared.length) {
+      store.patchDeliver({ exporting: false, error: 'Nothing to export — import or generate a part first.' })
+      return
+    }
+    const base = safeFilename(d.title || 'goldsmith-export')
+    const mime = MESH_MIME[d.exportFormat]
     const files: NamedMesh[] = d.exportScope === 'merged'
       ? [{ name: base, mesh: mergeMeshData(prepared.map((p) => p.mesh)) }]
       : prepared

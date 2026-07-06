@@ -24,10 +24,18 @@ export function createGemPart(
   return addGeneratedPart(name, generateGem(params), appearance)
 }
 
-export function createGemCutterPart(name: string, params: GemParams, clearance: number): string {
+export function createGemCutterPart(
+  name: string,
+  params: GemParams,
+  clearance: number,
+  appearance?: Partial<PartAppearance>,
+): string {
+  // Match the appearance BuildPanel actually applies to cutters, so adopting
+  // this facade can't silently produce differently-shaded parts.
   return addGeneratedPart(name, generateGemCutter(params, clearance), {
-    material: null,
-    flatShading: false,
+    material: 'cutter',
+    flatShading: true,
+    ...appearance,
   })
 }
 

@@ -197,7 +197,7 @@ export function exportHistoryCSV() {
 }
 
 export function applyShrinkage(pct: number) {
-  const id = requireSelection()
+  const id = requireSelection((msg) => useAppStore.getState().patchCost({ error: msg }))
   if (!id || !(pct > -100)) return
   getEngine().applyScale(id, 1 + pct / 100)
 }

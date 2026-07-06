@@ -1,5 +1,7 @@
 import { useEffect } from 'react'
 import { Circle, Loader2, PenTool, Ruler, Thermometer, Trash2, Undo2, X } from 'lucide-react'
+// Import from the local model modules, not the '@/features/measure' barrel —
+// that barrel re-exports this slice, which would create a self-import cycle.
 import {
   clearAllMeasurements,
   detectInnerDiameter,
@@ -8,8 +10,8 @@ import {
   setMeasureColor,
   setMeasurePicking,
   undoLastMeasurement,
-  updateSection,
-} from '@/features/measure'
+} from '../model/measureController'
+import { updateSection } from '../model/sectionController'
 import {
   cancelThicknessHeatmap,
   clearThicknessHeatmap,

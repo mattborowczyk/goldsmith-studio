@@ -9,7 +9,7 @@ import {
   Scale3D,
   Sparkles,
 } from 'lucide-react'
-import { getEngine } from '@/app/engine'
+import { getEngine } from '@/core/controller/context'
 import {
   downloadClientPreview,
   downloadSnapshot,

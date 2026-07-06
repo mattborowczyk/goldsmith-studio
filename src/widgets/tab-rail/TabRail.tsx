@@ -9,11 +9,12 @@ import {
   FileText,
   LayoutGrid,
 } from 'lucide-react'
+import type { ElementType } from 'react'
 import type { WorkflowTab } from '@/core/types'
 import { useAppStore } from '@/store/appStore'
 import { cn } from '@/lib/utils'
 
-const TABS: { id: WorkflowTab; label: string; icon: React.ElementType; enabled: boolean }[] = [
+const TABS: { id: WorkflowTab; label: string; icon: ElementType; enabled: boolean }[] = [
   { id: 'import', label: 'Import', icon: FolderInput, enabled: true },
   { id: 'repair', label: 'Repair', icon: Wrench, enabled: true },
   { id: 'measure', label: 'Measure', icon: Ruler, enabled: true },

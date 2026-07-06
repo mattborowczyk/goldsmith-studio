@@ -2,32 +2,37 @@ import { useEffect } from 'react'
 import {
   Box, Brush, Compass, Gauge, Layers, Loader2, Radar, RotateCcw, Scissors, Shell, Trash2, Wand2, X,
 } from 'lucide-react'
+// Import directly from the model modules — not the feature barrel — to avoid the
+// fit ↔ grillz ↔ FitPanel import cycle (the barrel re-exports this component).
 import {
   cancelFit,
-  clearBrushSelection,
   clearFitMap,
   computeClearanceMap,
-  findBestFitAxis,
   generateOffsetPart,
-  generateShell,
-  resetInsertionAxis,
-  runBlockout,
-  setBrushRadius,
-  setBrushSelect,
   setFitBandHalf,
   setFitClearance,
   setFitScanPart,
   setFitShellPart,
-  setInsertionAxis,
-  setOpenGingival,
-  setRetention,
-  setShellThickness,
-  setWandSelect,
-  setWandThreshold,
   subtractFit,
   teardownFit,
+} from '../model/fitController'
+import {
+  clearBrushSelection,
+  generateShell,
+  setBrushRadius,
+  setBrushSelect,
+  setOpenGingival,
+  setShellThickness,
+} from '../model/shellController'
+import {
+  findBestFitAxis,
+  resetInsertionAxis,
+  runBlockout,
+  setInsertionAxis,
+  setRetention,
   toggleSurvey,
-} from '@/features/fit'
+} from '../model/undercutController'
+import { setWandSelect, setWandThreshold } from '../model/wandController'
 import { useAppStore } from '@/store/appStore'
 import { Button } from '@/components/ui/button'
 import { Select } from '@/components/ui/select'

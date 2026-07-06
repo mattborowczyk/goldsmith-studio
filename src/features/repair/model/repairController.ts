@@ -12,7 +12,7 @@ import type { SectionAxis } from '@/core/types'
 
 export async function analyzeSelected(): Promise<void> {
   const store = useAppStore.getState()
-  const id = requireSelection()
+  const id = requireSelection((msg) => store.patchRepair({ error: msg }))
   if (!id) return
   const mesh = getEngine().getWorldMeshData(id)
   if (!mesh) return
@@ -28,7 +28,7 @@ export async function analyzeSelected(): Promise<void> {
 
 export async function healSelected(): Promise<void> {
   const store = useAppStore.getState()
-  const id = requireSelection()
+  const id = requireSelection((msg) => store.patchRepair({ error: msg }))
   if (!id) return
   const eng = getEngine()
   const mesh = eng.getWorldMeshData(id)
@@ -71,7 +71,7 @@ export function undoHeal(): void {
 
 export async function splitSelected(): Promise<void> {
   const store = useAppStore.getState()
-  const id = requireSelection()
+  const id = requireSelection((msg) => store.patchRepair({ error: msg }))
   if (!id) return
   const eng = getEngine()
   const mesh = eng.getWorldMeshData(id)
@@ -120,7 +120,7 @@ function capRange(info: RimSummary, axis: SectionAxis): { position: number; min:
 
 export async function beginBaseCap(): Promise<void> {
   const store = useAppStore.getState()
-  const id = requireSelection()
+  const id = requireSelection((msg) => store.patchRepair({ error: msg }))
   if (!id) return
   const mesh = getEngine().getWorldMeshData(id)
   if (!mesh) return
@@ -159,7 +159,7 @@ export function updateBaseCap(patch: Partial<Pick<BaseCapState, 'axis' | 'positi
 export async function applyBaseCap(): Promise<void> {
   const store = useAppStore.getState()
   const cap = store.repair.baseCap
-  const id = requireSelection()
+  const id = requireSelection((msg) => store.patchRepair({ error: msg }))
   if (!cap || !id) return
   const eng = getEngine()
   const mesh = eng.getWorldMeshData(id)

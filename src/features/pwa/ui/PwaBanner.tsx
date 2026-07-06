@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { Download, RefreshCw, WifiOff, X } from 'lucide-react'
-import { dismissPwaBanner, promptInstall, reloadForUpdate } from '@/app/pwa'
+import { dismissPwaBanner, promptInstall, reloadForUpdate } from '../model/pwaController'
 import { useAppStore } from '@/store/appStore'
 import { Button } from '@/components/ui/button'
 

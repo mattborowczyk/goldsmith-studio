@@ -11,17 +11,22 @@ export async function importFiles(
   store.setImporting(true)
   try {
     const eng = getEngine()
+    const factor = UNIT_TO_MM[opts.unit]
+    // Parse everything up front so a mid-batch failure never destroys the
+    // existing scene — the destructive clear only runs once all files are in.
+    const imported: { name: string; data: ReturnType<typeof scaleMeshData>; colors?: Parameters<typeof eng.addPart>[5] }[] = []
+    for (const file of files) {
+      const parts = await importFile(file)
+      for (const part of parts) {
+        imported.push({ name: part.name, data: scaleMeshData(part.data, factor), colors: part.colors })
+      }
+    }
     if (opts.mode === 'replace') {
       eng.clearParts()
       revisions.clear()
     }
-    const factor = UNIT_TO_MM[opts.unit]
-    for (const file of files) {
-      const parts = await importFile(file)
-      for (const part of parts) {
-        const data = scaleMeshData(part.data, factor)
-        eng.addPart(newPartId(), part.name, data, undefined, undefined, part.colors)
-      }
+    for (const part of imported) {
+      eng.addPart(newPartId(), part.name, part.data, undefined, undefined, part.colors)
     }
     eng.fitToView()
     store.setImporting(false)

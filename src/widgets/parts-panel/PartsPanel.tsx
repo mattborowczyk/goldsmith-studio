@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Boxes, ChevronDown, ChevronUp, Eye, EyeOff, Pencil, Trash2 } from 'lucide-react'
-import { getEngine } from '@/app/engine'
+import { getEngine } from '@/core/controller/context'
 import { MATERIAL_PRESETS } from '@/core/engine/materials'
 import type { MaterialPreset } from '@/core/types'
 import { useAppStore } from '@/store/appStore'
@@ -56,7 +56,7 @@ export function PartsPanel() {
               <Button
                 variant="ghost"
                 size="iconSm"
-                className="size-8 opacity-0 group-hover:opacity-100"
+                className="size-8 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
                 title="Rename"
                 onClick={() => {
                   const name = prompt('Rename part', part.name)
@@ -68,7 +68,7 @@ export function PartsPanel() {
               <Button
                 variant="ghost"
                 size="iconSm"
-                className="size-8 text-destructive/80 opacity-0 hover:text-destructive group-hover:opacity-100"
+                className="size-8 text-destructive/80 opacity-0 hover:text-destructive group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
                 title="Delete"
                 onClick={() => getEngine().removePart(part.id)}
               >

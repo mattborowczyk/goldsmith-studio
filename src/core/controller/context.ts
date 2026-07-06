@@ -87,14 +87,20 @@ export function handlePointPicked(point: Vec3) {
 }
 
 
-export function requireSelection(): string | null {
+/**
+ * Resolve the part to operate on: the current selection, or the sole part when
+ * there's exactly one. When neither holds, the caller-supplied `onError` (if any)
+ * receives the message so each feature can surface it in its own UI — this helper
+ * is shared by Repair, Measure and Cost, so it must not hardcode any one slice.
+ */
+export function requireSelection(onError?: (message: string) => void): string | null {
   const store = useAppStore.getState()
   if (store.selectedId) return store.selectedId
   if (store.parts.length === 1) {
     getEngine().select(store.parts[0].id)
     return store.parts[0].id
   }
-  store.patchRepair({ error: 'Select a part first (tap it in the viewport or the parts list).' })
+  onError?.('Select a part first (tap it in the viewport or the parts list).')
   return null
 }
 
