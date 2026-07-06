@@ -57,7 +57,14 @@ import {
   type ReportPartInput,
 } from '@/core/report/reportModel'
 import { buildReportPDF } from '@/core/report/pdf'
-import { detectHeadAngleDeg, pointAngleDeg, resizeRing } from '@/core/geometry/resize'
+import {
+  detectHeadAngleDeg,
+  planResize,
+  pointAngleDeg,
+  resizeRing,
+  resizeStrainField,
+  type ResizeOptions,
+} from '@/core/geometry/resize'
 import { diameterToSize, sizeToDiameter, ukLabel, type SizeSystem } from '@/core/generators/ringSizes'
 import type {
   DisplayMode,
@@ -1792,24 +1799,68 @@ function sizeLabelFor(system: SizeSystem, diameter: number): string {
   return system === 'UK' ? `UK ${ukLabel(size)}` : `${system} ${size.toFixed(1)}`
 }
 
+/** The resize options the deformation, the readout and the strain map all share. */
+function resizeOptionsFromState(): ResizeOptions | null {
+  const r = useAppStore.getState().resize
+  if (!r.frame) return null
+  return {
+    frame: r.frame,
+    mode: r.mode,
+    targetInnerDiameter: r.targetDiameter,
+    protectedCenterDeg: r.protectedCenterDeg,
+    protectedDeg: r.protectedDeg,
+    smoothingDeg: r.smoothingDeg,
+    seamCenterDeg: r.autoSeam ? undefined : r.seamCenterDeg,
+    seamDeg: r.seamDeg,
+  }
+}
+
 /** Rebuild the 3D protected-sector gauge + before/after labels from store state. */
 function refreshResizeOverlay() {
   const r = useAppStore.getState().resize
   if (!engine) return
-  if (!r.frame || r.detected !== true || r.currentDiameter === null) {
+  const opts = resizeOptionsFromState()
+  if (!opts || r.detected !== true || r.currentDiameter === null) {
     engine.setResizeOverlay(null)
+    engine.setResizeStrain(null, null)
     return
   }
+  const plan = planResize(opts)
   const overlay: ResizeOverlay = {
-    frame: r.frame,
+    frame: r.frame!,
     mode: r.mode,
-    protectedCenterDeg: r.protectedCenterDeg,
-    protectedDeg: r.protectedDeg,
-    smoothingDeg: r.smoothingDeg,
+    protectedCenterDeg: plan.headCenterDeg,
+    protectedDeg: plan.protectedDeg,
+    smoothingDeg: plan.smoothingDeg, // effective values — the arcs never lie
+    seamCenterDeg: plan.seamCenterDeg,
+    seamDeg: plan.seamDeg,
     beforeLabel: `Before · ${sizeLabelFor(r.targetSystem, r.currentDiameter)} · Ø${r.currentDiameter.toFixed(2)}`,
     afterLabel: `After · ${sizeLabelFor(r.targetSystem, r.targetDiameter)} · Ø${r.targetDiameter.toFixed(2)}`,
   }
   engine.setResizeOverlay(overlay)
+  refreshResizeStrainMap()
+}
+
+/** Paint (or clear) the tangential-strain preview on the resize target part. */
+function refreshResizeStrainMap() {
+  const r = useAppStore.getState().resize
+  if (!engine) return
+  const opts = resizeOptionsFromState()
+  if (!r.strainMapEnabled || !opts || r.detected !== true || !r.sourcePartId) {
+    engine.setResizeStrain(null, null)
+    return
+  }
+  const mesh = engine.getWorldMeshData(r.sourcePartId)
+  if (!mesh) {
+    engine.setResizeStrain(null, null)
+    return
+  }
+  engine.setResizeStrain(r.sourcePartId, resizeStrainField(mesh, opts))
+}
+
+export function setResizeStrainMap(on: boolean): void {
+  useAppStore.getState().patchResize({ strainMapEnabled: on })
+  refreshResizeStrainMap()
 }
 
 /**
@@ -1835,6 +1886,7 @@ function detectResizeFrameFor(id: string): RingFrame | null {
     frame,
     currentDiameter: frame.innerR * 2,
     protectedCenterDeg: centerDeg,
+    seamCenterDeg: store.resize.autoSeam ? (centerDeg + 180) % 360 : store.resize.seamCenterDeg,
     sourcePartId: id,
     error: null,
   })
@@ -1849,6 +1901,9 @@ export function detectResizeFrame() {
 }
 
 export function setResizeMode(mode: ResizeMode) {
+  // disarm an in-flight pick: its section may unmount with the mode switch,
+  // which would leave the engine in pick mode with no visible cancel control
+  if (useAppStore.getState().resize.picking) setResizePicking(false)
   useAppStore.getState().patchResize({ mode })
   refreshResizeOverlay()
 }
@@ -1882,10 +1937,35 @@ export function setResizeTargetDiameter(mm: number) {
 }
 
 export function setResizeProtectedCenter(deg: number) {
+  const norm = ((deg % 360) + 360) % 360
+  const r = useAppStore.getState().resize
   useAppStore.getState().patchResize({
-    protectedCenterDeg: ((deg % 360) + 360) % 360,
+    protectedCenterDeg: norm,
     autoHead: false,
+    seamCenterDeg: r.autoSeam ? (norm + 180) % 360 : r.seamCenterDeg,
   })
+  refreshResizeOverlay()
+}
+
+export function setResizeSeamCenter(deg: number) {
+  useAppStore.getState().patchResize({
+    seamCenterDeg: ((deg % 360) + 360) % 360,
+    autoSeam: false,
+  })
+  refreshResizeOverlay()
+}
+
+export function setResizeAutoSeam(on: boolean) {
+  const r = useAppStore.getState().resize
+  useAppStore.getState().patchResize({
+    autoSeam: on,
+    seamCenterDeg: on ? (r.protectedCenterDeg + 180) % 360 : r.seamCenterDeg,
+  })
+  refreshResizeOverlay()
+}
+
+export function setResizeSeamWidth(deg: number) {
+  useAppStore.getState().patchResize({ seamDeg: Math.min(Math.max(deg, 8), 160) })
   refreshResizeOverlay()
 }
 
@@ -1917,20 +1997,22 @@ export function setResizeReheal(on: boolean) {
   useAppStore.getState().patchResize({ reheal: on })
 }
 
-/** Arm/disarm viewport picking to set the protected-zone centre. */
-export function setResizePicking(on: boolean) {
+/** Arm viewport picking for the head or seam centre, or disarm with false. */
+export function setResizePicking(target: false | 'head' | 'seam') {
   const store = useAppStore.getState()
   const eng = getEngine()
-  pickConsumer = on ? 'resize' : null
-  eng.setPickMode(on)
-  eng.setGizmoMode(on ? 'none' : store.gizmoMode)
-  store.patchResize({ picking: on })
+  pickConsumer = target ? 'resize' : null
+  eng.setPickMode(!!target)
+  eng.setGizmoMode(target ? 'none' : store.gizmoMode)
+  store.patchResize({ picking: target })
 }
 
 function handleResizePointPicked(point: Vec3) {
-  const frame = useAppStore.getState().resize.frame
-  if (!frame) return
-  setResizeProtectedCenter(pointAngleDeg(point, frame))
+  const r = useAppStore.getState().resize
+  if (!r.frame) return
+  const deg = pointAngleDeg(point, r.frame)
+  if (r.picking === 'seam') setResizeSeamCenter(deg)
+  else setResizeProtectedCenter(deg)
   setResizePicking(false)
 }
 
@@ -1951,16 +2033,11 @@ export async function applyResize(): Promise<void> {
   if (!r.frame) return
   const mesh = eng.getWorldMeshData(id)
   if (!mesh) return
+  const opts = resizeOptionsFromState()
+  if (!opts) return
   useAppStore.getState().patchResize({ busy: true, error: null })
   try {
-    let out = resizeRing(mesh, {
-      frame: r.frame,
-      mode: r.mode,
-      targetInnerDiameter: r.targetDiameter,
-      protectedCenterDeg: r.protectedCenterDeg,
-      protectedDeg: r.protectedDeg,
-      smoothingDeg: r.smoothingDeg,
-    })
+    let out = resizeRing(mesh, opts)
     if (r.reheal) {
       out = (await clients.repair.heal(out, { mode: 'safe', ...HEAL_PRESETS.safe })).mesh
     }
@@ -1981,6 +2058,7 @@ export async function applyResize(): Promise<void> {
       sourcePartId: id,
       frame: newFrame ?? r.frame,
       currentDiameter: newFrame ? newFrame.innerR * 2 : r.currentDiameter,
+      strainMapEnabled: false, // the preview described the mapping just applied
     })
     refreshResizeOverlay()
   } catch (err) {
@@ -2011,10 +2089,12 @@ export function undoResize(): void {
   refreshResizeOverlay()
 }
 
-/** Disarm picking + clear the 3D overlay when leaving the Resize tab. */
+/** Disarm picking + clear the 3D overlays when leaving the Resize tab. */
 export function teardownResize() {
   if (pickConsumer === 'resize') setResizePicking(false)
   engine?.setResizeOverlay(null)
+  engine?.setResizeStrain(null, null)
+  useAppStore.getState().patchResize({ strainMapEnabled: false })
 }
 
 // ---------- export & reports (plan §2.7) ----------

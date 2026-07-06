@@ -128,6 +128,7 @@ export function analyzeRingFrame(mesh: MeshData): RingFrame | null {
   // circle to it, which recovers the true axis the head auto-detect and the
   // deformation both need.
   const BINS = 120
+  let rim: [number, number][] = []
   for (let iter = 0; iter < 4; iter++) {
     const minR2 = new Float64Array(BINS).fill(Infinity)
     const rimU = new Float64Array(BINS)
@@ -144,7 +145,7 @@ export function analyzeRingFrame(mesh: MeshData): RingFrame | null {
         rimV[b] = p[i + v]
       }
     }
-    const rim: [number, number][] = []
+    rim = []
     for (let b = 0; b < BINS; b++) if (minR2[b] !== Infinity) rim.push([rimU[b], rimV[b]])
     const fit = fitCircleCenter(rim)
     if (!fit) break
@@ -152,6 +153,38 @@ export function analyzeRingFrame(mesh: MeshData): RingFrame | null {
     cu = fit[0]
     cv = fit[1]
     if (moved < 1e-5) break
+  }
+
+  // Chebyshev refinement: the least-squares fit is biased by locally-recessed
+  // bore arcs (e.g. the head clearance a solitaire resize leaves), reading the
+  // hole slightly undersized. Pattern-search the centre that MAXIMISES the
+  // minimum rim distance — the centre of the largest pin that fits, which is
+  // what a ring gauge measures. On a clean circular bore this is a no-op.
+  if (rim.length >= 3) {
+    const minDist = (x: number, y: number): number => {
+      let min = Infinity
+      for (const [px, py] of rim) {
+        const d = Math.hypot(px - x, py - y)
+        if (d < min) min = d
+      }
+      return min
+    }
+    let best = minDist(cu, cv)
+    for (let step = 0.1; step > 1e-6; step *= 0.5) {
+      let improved = true
+      while (improved) {
+        improved = false
+        for (const [dx, dy] of [[step, 0], [-step, 0], [0, step], [0, -step]]) {
+          const d = minDist(cu + dx, cv + dy)
+          if (d > best + 1e-12) {
+            best = d
+            cu += dx
+            cv += dy
+            improved = true
+          }
+        }
+      }
+    }
   }
 
   // reject solid parts (a triangle covering the refined centre means no hole).
