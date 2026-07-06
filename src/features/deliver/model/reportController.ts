@@ -133,7 +133,8 @@ export async function copyReportText(): Promise<void> {
   const store = useAppStore.getState()
   try {
     const model = buildReportModel(buildReportInputFromState())
-    await navigator.clipboard.writeText(reportToText(model))
+    if (!globalThis.navigator?.clipboard) throw new Error('Clipboard not available')
+    await globalThis.navigator.clipboard.writeText(reportToText(model))
     store.patchDeliver({ copied: true, error: null })
     setTimeout(() => useAppStore.getState().patchDeliver({ copied: false }), 1500)
   } catch (err) {

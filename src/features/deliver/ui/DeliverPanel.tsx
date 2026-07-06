@@ -44,8 +44,8 @@ const textareaClass =
 
 // Web Share (§2.8): send an exported file straight to Mail/AirDrop on iPad.
 // Probe per MIME type — a browser may allow PDF sharing while blocking STL.
-const SHARE_MESH = canShareFiles([new File([''], 'export.stl', { type: 'model/stl' })])
-const SHARE_PDF = canShareFiles([new File([''], 'report.pdf', { type: 'application/pdf' })])
+const SHARE_MESH = typeof File !== 'undefined' && canShareFiles([new File([''], 'export.stl', { type: 'model/stl' })])
+const SHARE_PDF = typeof File !== 'undefined' && canShareFiles([new File([''], 'report.pdf', { type: 'application/pdf' })])
 
 function ExportSection() {
   const d = useAppStore((s) => s.deliver)

@@ -86,7 +86,8 @@ export function pickTextFile(accept: string): Promise<string | null> {
 
 /** Can we share these files via the Web Share API on this device? */
 export function canShareFiles(files: File[]): boolean {
-  const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean }
+  if (typeof navigator === 'undefined' || !globalThis.navigator) return false
+  const nav = globalThis.navigator as Navigator & { canShare?: (data: ShareData) => boolean }
   return typeof nav.canShare === 'function' && nav.canShare({ files })
 }
 
@@ -101,10 +102,11 @@ export async function shareFiles(
   mime: string,
   title?: string,
 ): Promise<boolean> {
+  if (typeof File === 'undefined' || typeof navigator === 'undefined' || !globalThis.navigator) return false
   const file = new File([data as BlobPart], filename, { type: mime })
   if (!canShareFiles([file])) return false
   try {
-    await navigator.share({ files: [file], title: title ?? filename })
+    await globalThis.navigator.share({ files: [file], title: title ?? filename })
     return true
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') return true
