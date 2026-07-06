@@ -1450,12 +1450,21 @@ export class SceneManager {
     if (this.brush) this.brush.radius = radius
   }
 
-  /** Empty the painted selection (keeps the brush armed). */
+  /**
+   * Empty the painted selection. An interactive brush stays armed (empty overlay,
+   * ready to repaint); a passive overlay (wand result, disarmed brush) is dropped
+   * entirely so the part gets its real material back — otherwise the grey overlay
+   * is unreachable once the Clear button disappears.
+   */
   clearBrushSelection() {
     if (!this.brush) return
-    this.brush.selected.clear()
-    const part = this.parts.get(this.brush.id)
-    if (part) this.paintBrushOverlay(part)
+    if (this.brush.interactive) {
+      this.brush.selected.clear()
+      const part = this.parts.get(this.brush.id)
+      if (part) this.paintBrushOverlay(part)
+    } else {
+      this.clearBrushOverlay()
+    }
     this.emit('brushSelectionChanged', 0)
   }
 
