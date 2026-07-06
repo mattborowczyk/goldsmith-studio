@@ -186,7 +186,12 @@ export function planResize(opts: ResizeOptions): ResizePlan {
   const headCenterDeg = ((opts.protectedCenterDeg ?? 0) % 360 + 360) % 360
   const isHead = opts.mode === 'protect-head'
   const protectedDeg = isHead ? Math.min(Math.max(opts.protectedDeg ?? 0, 0), 176) : 0
-  const smoothingDeg = isHead ? Math.min(Math.max(opts.smoothingDeg ?? 0, 0), 120) : 0
+  // clamp smoothing so head + both blends always leave room for a working seam
+  // window — at extreme slider values the window would otherwise invert and the
+  // angle remap's ascending-boundary layout would break down
+  const minWindow = SEAM_MIN_DEG + 4
+  const smoothingMax = Math.max((360 - protectedDeg - 2 * SEAM_MARGIN_DEG - minWindow) / 2, 0)
+  const smoothingDeg = isHead ? Math.min(Math.max(opts.smoothingDeg ?? 0, 0), 120, smoothingMax) : 0
 
   // seam window in head-relative φ-space: must clear the head + blend zones
   const zoneEnd = protectedDeg / 2 + smoothingDeg + SEAM_MARGIN_DEG

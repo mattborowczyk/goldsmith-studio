@@ -1829,9 +1829,9 @@ function refreshResizeOverlay() {
   const overlay: ResizeOverlay = {
     frame: r.frame!,
     mode: r.mode,
-    protectedCenterDeg: r.protectedCenterDeg,
-    protectedDeg: r.protectedDeg,
-    smoothingDeg: r.smoothingDeg,
+    protectedCenterDeg: plan.headCenterDeg,
+    protectedDeg: plan.protectedDeg,
+    smoothingDeg: plan.smoothingDeg, // effective values — the arcs never lie
     seamCenterDeg: plan.seamCenterDeg,
     seamDeg: plan.seamDeg,
     beforeLabel: `Before · ${sizeLabelFor(r.targetSystem, r.currentDiameter)} · Ø${r.currentDiameter.toFixed(2)}`,
@@ -1901,6 +1901,9 @@ export function detectResizeFrame() {
 }
 
 export function setResizeMode(mode: ResizeMode) {
+  // disarm an in-flight pick: its section may unmount with the mode switch,
+  // which would leave the engine in pick mode with no visible cancel control
+  if (useAppStore.getState().resize.picking) setResizePicking(false)
   useAppStore.getState().patchResize({ mode })
   refreshResizeOverlay()
 }

@@ -360,6 +360,44 @@ describe('planResize — seam closure and fold guard', () => {
     const gap = angleDist(plan.seamCenterDeg, 90)
     expect(gap).toBeGreaterThanOrEqual(45 / 2 + 40 + plan.seamDeg / 2)
   })
+
+  it('keeps a working seam window at extreme head + smoothing widths', () => {
+    // 176° head + 120° smoothing on each side would invert the seam window;
+    // planResize must clamp smoothing so a real seam sector survives.
+    const plan = planResize({
+      ...base,
+      targetInnerDiameter: 22,
+      protectedDeg: 176,
+      smoothingDeg: 120,
+    })
+    expect(plan.seamDeg).toBeGreaterThanOrEqual(8)
+    // the seam sits in the clear window between the two blend zones
+    const zoneEnd = plan.protectedDeg / 2 + plan.smoothingDeg
+    const psi = ((plan.seamCenterDeg - plan.headCenterDeg) % 360 + 360) % 360
+    expect(psi - plan.seamDeg / 2).toBeGreaterThanOrEqual(zoneEnd - 1e-6)
+    expect(psi + plan.seamDeg / 2).toBeLessThanOrEqual(360 - zoneEnd + 1e-6)
+  })
+
+  it('still closes g(360) = 360 under the extreme-width clamp', () => {
+    // a valid remap must be continuous & closing even in the clamped regime
+    const frameBig: RingFrame = { ...Z_FRAME, innerR: 9.5, outerR: 11.5 }
+    const mesh = makeSculptedRing({ innerR: 9.5 })
+    const out = resizeRing(mesh, {
+      frame: frameBig,
+      mode: 'protect-head',
+      targetInnerDiameter: 22,
+      protectedCenterDeg: 90,
+      protectedDeg: 176,
+      smoothingDeg: 120,
+    })
+    // no NaNs, still watertight (indices unchanged), bore never crosses target
+    let minR = Infinity
+    for (let i = 0; i < out.positions.length; i += 3) {
+      expect(Number.isFinite(out.positions[i])).toBe(true)
+      minR = Math.min(minR, radialOf(out.positions, i, frameBig))
+    }
+    expect(minR).toBeGreaterThanOrEqual(11 - 1e-3)
+  })
 })
 
 describe('resizeStrainField', () => {

@@ -167,7 +167,7 @@ function ProtectHeadSection() {
       <Button
         variant={resize.picking === 'head' ? 'default' : 'secondary'}
         size="sm"
-        disabled={resize.detected !== true}
+        disabled={resize.detected !== true || resize.busy}
         onClick={() => setResizePicking(resize.picking === 'head' ? false : 'head')}
       >
         <Crosshair /> {resize.picking === 'head' ? 'Tap the head in the viewport…' : 'Pick head in viewport'}
@@ -243,7 +243,7 @@ function SeamSection() {
       <Button
         variant={resize.picking === 'seam' ? 'default' : 'secondary'}
         size="sm"
-        disabled={resize.detected !== true}
+        disabled={resize.detected !== true || resize.busy}
         onClick={() => setResizePicking(resize.picking === 'seam' ? false : 'seam')}
       >
         <Crosshair /> {resize.picking === 'seam' ? 'Tap the seam spot in the viewport…' : 'Pick seam in viewport'}
@@ -275,7 +275,7 @@ function SeamSection() {
       <Button
         variant={resize.strainMapEnabled ? 'default' : 'secondary'}
         size="sm"
-        disabled={resize.detected !== true}
+        disabled={resize.detected !== true || resize.busy}
         onClick={() => setResizeStrainMap(!resize.strainMapEnabled)}
       >
         <Thermometer /> {resize.strainMapEnabled ? 'Hide strain preview' : 'Preview surface strain'}

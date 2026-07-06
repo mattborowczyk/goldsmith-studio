@@ -465,6 +465,7 @@ export class SceneManager {
     if (this.heatmap?.id === part.id) return // heatmap owns this part's material
     if (this.clearance?.id === part.id) return // clearance map owns this part's material
     if (this.survey?.id === part.id) return // undercut survey owns this part's material
+    if (this.strain?.id === part.id) return // resize strain preview owns this part's material
     if (this.brush?.id === part.id) return // brush-select overlay owns this part's material
     if (this.showsVertexColors(part)) {
       this.applyColorAttribute(part, part.vertexColors!)
@@ -534,6 +535,7 @@ export class SceneManager {
     if (this.heatmap?.id === id) this.heatmap = null
     if (this.clearance?.id === id) this.clearance = null
     if (this.survey?.id === id) this.survey = null
+    if (this.strain?.id === id) this.strain = null
     if (this.brush?.id === id) { this.brush = null; this.painting = false }
     if (this.selectedId === id) this.select(null)
     this.scene.remove(part.mesh)
