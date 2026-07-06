@@ -139,6 +139,7 @@ class FakeSceneManager {
   setGizmoMode = vi.fn()
   setPickMode = vi.fn()
   setResizeOverlay = vi.fn()
+  setResizeStrain = vi.fn()
   setThicknessHeatmap = vi.fn()
   setCapPlanePreview = vi.fn()
   setHeatmapThreshold = vi.fn()
@@ -425,8 +426,8 @@ describe('teardown on tab-leave', () => {
 
   it('teardownResize disarms picking and clears the 3D overlay', () => {
     const fake = installEngine()
-    setResizePicking(true)
-    expect(useAppStore.getState().resize.picking).toBe(true)
+    setResizePicking('head')
+    expect(useAppStore.getState().resize.picking).toBe('head')
 
     teardownResize()
 

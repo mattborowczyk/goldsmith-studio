@@ -206,6 +206,10 @@ export interface ResizeOverlay {
   protectedDeg: number
   /** Angular width of each blend zone flanking the protected zone (degrees). */
   smoothingDeg: number
+  /** Centre of the seam (sacrificial stretch) sector, degrees. */
+  seamCenterDeg: number
+  /** Effective full width of the seam sector (degrees) — post fold-guard. */
+  seamDeg: number
   beforeLabel: string
   afterLabel: string
 }

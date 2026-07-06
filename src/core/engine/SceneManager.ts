@@ -29,7 +29,7 @@ import type {
   Vec3,
   ViewPreset,
 } from '../types'
-import { anglePointOnRing, pointAngleDeg } from '../geometry/resize'
+import { anglePointOnRing, pointAngleDeg, strainColor } from '../geometry/resize'
 import { thicknessColor } from '../geometry/thickness'
 import { clearanceColor } from '../geometry/fit'
 import { undercutColor } from '../geometry/undercut'
@@ -73,6 +73,12 @@ interface ClearanceState {
 
 /** Active undercut survey: per source-vertex undercut value (0 clear, >0 undercut). */
 interface SurveyState {
+  id: string
+  values: Float32Array
+}
+
+/** Active resize strain preview: per source-vertex signed tangential strain. */
+interface StrainState {
   id: string
   values: Float32Array
 }
@@ -156,6 +162,7 @@ export class SceneManager {
   private heatmap: HeatmapState | null = null
   private clearance: ClearanceState | null = null
   private survey: SurveyState | null = null
+  private strain: StrainState | null = null
   private brush: BrushState | null = null
   private painting = false
   private parts = new Map<string, ScenePart>()
@@ -894,6 +901,10 @@ export class SceneManager {
         this.resizeHandles.push(handle)
       }
     }
+    // the seam sector — where the added/removed arc length is absorbed
+    const sHalf = overlay.seamDeg / 2
+    const sc = overlay.seamCenterDeg
+    this.resizeGroup.add(this.buildSectorMesh(overlay, sc - sHalf, sc + sHalf, r0, r1, 0xef6a4c, 0.4))
 
     // before/after labels stacked above the ring (world up)
     const center = new THREE.Vector3()
@@ -1383,6 +1394,56 @@ export class SceneManager {
 
   hasUndercutSurvey(): boolean {
     return this.survey !== null
+  }
+
+  // ---------- resize strain preview (plan §2.6) ----------
+
+  /**
+   * Paint (or clear, with nulls) the resizer's tangential-strain preview:
+   * neutral where the surface is untouched/bent-only, red where the mapping
+   * stretches it, blue where it compresses. Transient overlay, mutually
+   * exclusive with the heatmap/clearance/survey paints.
+   */
+  setResizeStrain(id: string | null, values: Float32Array | null) {
+    if (!id || !values) {
+      this.clearResizeStrain()
+      return
+    }
+    const part = this.parts.get(id)
+    if (!part) return
+    this.clearThicknessHeatmap()
+    this.clearClearanceMap()
+    this.clearUndercutSurvey()
+    if (this.strain && this.strain.id !== id) this.clearResizeStrain()
+    this.strain = { id, values }
+    this.paintResizeStrain(part)
+  }
+
+  private paintResizeStrain(part: ScenePart) {
+    const s = this.strain!
+    let maxAbs = 0.02 // floor: tiny numeric strain stays neutral
+    for (let v = 0; v < s.values.length; v++) {
+      const a = Math.abs(s.values[v])
+      if (a > maxAbs) maxAbs = a
+    }
+    const srcColors = new Float32Array(part.data.positions.length)
+    for (let v = 0; v < s.values.length; v++) {
+      const [r, g, b] = strainColor(s.values[v], maxAbs)
+      srcColors[v * 3] = r
+      srcColors[v * 3 + 1] = g
+      srcColors[v * 3 + 2] = b
+    }
+    this.applyColorAttribute(part, srcColors)
+    part.mesh.material = this.getVertexColorMaterial(part.flatShading)
+    part.backMesh.visible = false
+  }
+
+  clearResizeStrain() {
+    const s = this.strain
+    if (!s) return
+    this.strain = null
+    const part = this.parts.get(s.id)
+    if (part) this.applyPartMaterial(part) // restores preset / imported colours
   }
 
   // ---------- grillz surface brush-select (plan §3.3) ----------
