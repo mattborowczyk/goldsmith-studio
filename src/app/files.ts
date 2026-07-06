@@ -86,7 +86,8 @@ export function pickTextFile(accept: string): Promise<string | null> {
 
 /** Can we share these files via the Web Share API on this device? */
 export function canShareFiles(files: File[]): boolean {
-  const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean }
+  if (typeof navigator === 'undefined' || !globalThis.navigator) return false
+  const nav = globalThis.navigator as Navigator & { canShare?: (data: ShareData) => boolean }
   return typeof nav.canShare === 'function' && nav.canShare({ files })
 }
 
@@ -101,13 +102,38 @@ export async function shareFiles(
   mime: string,
   title?: string,
 ): Promise<boolean> {
+  if (typeof File === 'undefined' || typeof navigator === 'undefined' || !globalThis.navigator) return false
   const file = new File([data as BlobPart], filename, { type: mime })
   if (!canShareFiles([file])) return false
   try {
-    await navigator.share({ files: [file], title: title ?? filename })
+    await globalThis.navigator.share({ files: [file], title: title ?? filename })
     return true
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') return true
     return false
   }
 }
+
+export async function deliverFiles(
+  built: { data: SaveData; name: string; mime: string }[],
+  opts: { share?: boolean; title?: string; type?: SaveType } = {},
+) {
+  if (opts.share && built.length === 1) {
+    const f = built[0]
+    if (await shareFiles(f.data, f.name, f.mime, opts.title)) return
+  }
+  for (const f of built) await saveFile(f.data, f.name, f.mime, opts.type)
+}
+
+export function dataURLtoBytes(url: string): Uint8Array {
+  const base64 = url.slice(url.indexOf(',') + 1)
+  const bin = atob(base64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return bytes
+}
+
+export function safeFilename(name: string): string {
+  return name.trim().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'goldsmith'
+}
+
