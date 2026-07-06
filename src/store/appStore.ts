@@ -129,10 +129,17 @@ export interface ResizeState {
   autoHead: boolean
   protectedDeg: number
   smoothingDeg: number
+  /** Seam (sacrificial stretch) sector — where the added/removed arc length goes. */
+  seamCenterDeg: number
+  /** Keep the seam automatically opposite the head. */
+  autoSeam: boolean
+  seamDeg: number
+  /** The tangential-strain heatmap preview is painted. */
+  strainMapEnabled: boolean
   /** Re-heal pass after deforming. */
   reheal: boolean
-  /** Viewport pick mode armed to set the protected centre. */
-  picking: boolean
+  /** Viewport pick mode armed to set the protected centre or the seam centre. */
+  picking: false | 'head' | 'seam'
   busy: boolean
   canUndo: boolean
   error: string | null
@@ -359,6 +366,10 @@ export const useAppStore = create<AppState>((set) => ({
     autoHead: true,
     protectedDeg: 45,
     smoothingDeg: 40,
+    seamCenterDeg: 270,
+    autoSeam: true,
+    seamDeg: 60,
+    strainMapEnabled: false,
     reheal: false,
     picking: false,
     busy: false,

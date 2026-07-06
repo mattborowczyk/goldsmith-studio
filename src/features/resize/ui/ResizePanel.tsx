@@ -1,15 +1,18 @@
 import { useEffect } from 'react'
-import { Crosshair, Maximize, RotateCcw, Scaling, Undo2 } from 'lucide-react'
+import { Crosshair, Maximize, RotateCcw, Scaling, Thermometer, Undo2 } from 'lucide-react'
 import {
   applyResize,
   detectResizeFrame,
   setResizeAutoHead,
+  setResizeAutoSeam,
   setResizeMode,
   setResizePicking,
   setResizeProtectedCenter,
   setResizeProtectedWidth,
   setResizeReheal,
+  setResizeSeamWidth,
   setResizeSmoothing,
+  setResizeStrainMap,
   setResizeTargetDiameter,
   setResizeTargetSize,
   setResizeTargetSystem,
@@ -17,6 +20,7 @@ import {
   undoResize,
 } from '@/features/resize'
 import { SIZE_SYSTEMS, ukOptions, type SizeSystem } from '@/core/generators/ringSizes'
+import { planResize, type ResizePlan } from '@/core/geometry/resize'
 import type { ResizeMode } from '@/core/types'
 import { useAppStore } from '@/store/appStore'
 import { Button } from '@/components/ui/button'
@@ -161,12 +165,12 @@ function ProtectHeadSection() {
         />
       </label>
       <Button
-        variant={resize.picking ? 'default' : 'secondary'}
+        variant={resize.picking === 'head' ? 'default' : 'secondary'}
         size="sm"
-        disabled={resize.detected !== true}
-        onClick={() => setResizePicking(!resize.picking)}
+        disabled={resize.detected !== true || resize.busy}
+        onClick={() => setResizePicking(resize.picking === 'head' ? false : 'head')}
       >
-        <Crosshair /> {resize.picking ? 'Tap the head in the viewport…' : 'Pick head in viewport'}
+        <Crosshair /> {resize.picking === 'head' ? 'Tap the head in the viewport…' : 'Pick head in viewport'}
       </Button>
 
       <label className="text-[10px] text-muted-foreground">
@@ -193,6 +197,94 @@ function ProtectHeadSection() {
           onValueChange={([deg]) => setResizeSmoothing(deg)}
         />
       </label>
+    </div>
+  )
+}
+
+/** The plan for the pending resize, or null while nothing is detected/valid. */
+function usePendingPlan(): ResizePlan | null {
+  const resize = useAppStore((s) => s.resize)
+  if (resize.detected !== true || !resize.frame || !(resize.targetDiameter > 0)) return null
+  try {
+    return planResize({
+      frame: resize.frame,
+      mode: resize.mode,
+      targetInnerDiameter: resize.targetDiameter,
+      protectedCenterDeg: resize.protectedCenterDeg,
+      protectedDeg: resize.protectedDeg,
+      smoothingDeg: resize.smoothingDeg,
+      seamCenterDeg: resize.autoSeam ? undefined : resize.seamCenterDeg,
+      seamDeg: resize.seamDeg,
+    })
+  } catch {
+    return null
+  }
+}
+
+function SeamSection() {
+  const resize = useAppStore((s) => s.resize)
+  const plan = usePendingPlan()
+  const seamPct = plan ? (plan.seamBoreScale - 1) * 100 : null
+  const hot = plan !== null && (Math.abs(seamPct!) > 30 || plan.preservationRelaxed)
+
+  return (
+    <div className="flex flex-col gap-2.5 border-t border-border/60 pt-3">
+      <span className="text-xs font-medium text-muted-foreground">Seam sector</span>
+      <p className="text-[11px] text-muted-foreground">
+        Sculpted texture is bent to the new curve, never stretched — all added or removed
+        length is absorbed here (where a jeweller would cut).
+      </p>
+
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] text-muted-foreground">Auto (opposite the head)</span>
+        <Switch checked={resize.autoSeam} onCheckedChange={setResizeAutoSeam} />
+      </div>
+
+      <Button
+        variant={resize.picking === 'seam' ? 'default' : 'secondary'}
+        size="sm"
+        disabled={resize.detected !== true || resize.busy}
+        onClick={() => setResizePicking(resize.picking === 'seam' ? false : 'seam')}
+      >
+        <Crosshair /> {resize.picking === 'seam' ? 'Tap the seam spot in the viewport…' : 'Pick seam in viewport'}
+      </Button>
+
+      <label className="text-[10px] text-muted-foreground">
+        Seam width{' '}
+        <span className="readout text-foreground">{resize.seamDeg.toFixed(0)}°</span>
+        {plan && plan.seamWidened && (
+          <span className="text-amber-400"> → widened to {plan.seamDeg.toFixed(0)}°</span>
+        )}
+        <Slider
+          min={8}
+          max={160}
+          step={1}
+          value={[resize.seamDeg]}
+          onValueChange={([deg]) => setResizeSeamWidth(deg)}
+        />
+      </label>
+
+      {plan && seamPct !== null && (
+        <p className={`readout rounded-lg bg-muted/40 px-3 py-2 text-[11px] ${hot ? 'text-amber-400' : ''}`}>
+          Texture: {plan.preservationRelaxed ? 'partially stretched (seam maxed out)' : 'bent only'} ·
+          seam {seamPct >= 0 ? 'stretch' : 'compression'}{' '}
+          <span className="font-semibold">{Math.abs(seamPct).toFixed(0)}%</span>
+        </p>
+      )}
+
+      <Button
+        variant={resize.strainMapEnabled ? 'default' : 'secondary'}
+        size="sm"
+        disabled={resize.detected !== true || resize.busy}
+        onClick={() => setResizeStrainMap(!resize.strainMapEnabled)}
+      >
+        <Thermometer /> {resize.strainMapEnabled ? 'Hide strain preview' : 'Preview surface strain'}
+      </Button>
+      {resize.strainMapEnabled && (
+        <p className="text-[10px] text-muted-foreground/70">
+          Red = stretched, blue = compressed, neutral = untouched or bent only.
+        </p>
+      )}
     </div>
   )
 }
@@ -224,6 +316,7 @@ export function ResizePanel() {
       <ModeSection />
       <TargetSection />
       {mode === 'protect-head' && <ProtectHeadSection />}
+      <SeamSection />
 
       <div className="flex items-center justify-between border-t border-border/60 pt-3">
         <span className="text-xs text-muted-foreground">Re-heal after resize</span>
@@ -242,7 +335,7 @@ export function ResizePanel() {
         )}
       </Button>
       {canUndo && (
-        <Button variant="secondary" size="sm" onClick={undoResize}>
+        <Button variant="secondary" size="sm" disabled={busy} onClick={undoResize}>
           <Undo2 /> Undo resize
         </Button>
       )}

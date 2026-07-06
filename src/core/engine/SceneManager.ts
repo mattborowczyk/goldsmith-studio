@@ -20,7 +20,7 @@ import type {
   Vec3,
   ViewPreset,
 } from '../types'
-import { anglePointOnRing, pointAngleDeg } from '../geometry/resize'
+import { anglePointOnRing, pointAngleDeg, strainColor } from '../geometry/resize'
 import { thicknessColor } from '../geometry/thickness'
 import { clearanceColor } from '../geometry/fit'
 import { undercutColor } from '../geometry/undercut'
@@ -64,6 +64,12 @@ interface ClearanceState {
 
 /** Active undercut survey: per source-vertex undercut value (0 clear, >0 undercut). */
 interface SurveyState {
+  id: string
+  values: Float32Array
+}
+
+/** Active resize strain preview: per source-vertex signed tangential strain. */
+interface StrainState {
   id: string
   values: Float32Array
 }
@@ -146,6 +152,7 @@ export class SceneManager {
   private heatmap: HeatmapState | null = null
   private clearance: ClearanceState | null = null
   private survey: SurveyState | null = null
+  private strain: StrainState | null = null
   private brush: BrushState | null = null
   private painting = false
   private parts = new Map<string, ScenePart>()
@@ -425,6 +432,7 @@ export class SceneManager {
     if (this.heatmap?.id === part.id) return // heatmap owns this part's material
     if (this.clearance?.id === part.id) return // clearance map owns this part's material
     if (this.survey?.id === part.id) return // undercut survey owns this part's material
+    if (this.strain?.id === part.id) return // resize strain preview owns this part's material
     if (this.brush?.id === part.id) return // brush-select overlay owns this part's material
     if (this.showsVertexColors(part)) {
       this.applyColorAttribute(part, part.vertexColors!)
@@ -494,6 +502,7 @@ export class SceneManager {
     if (this.heatmap?.id === id) this.heatmap = null
     if (this.clearance?.id === id) this.clearance = null
     if (this.survey?.id === id) this.survey = null
+    if (this.strain?.id === id) this.strain = null
     if (this.brush?.id === id) { this.brush = null; this.painting = false }
     if (this.selectedId === id) this.select(null)
     this.scene.remove(part.mesh)
@@ -861,6 +870,10 @@ export class SceneManager {
         this.resizeHandles.push(handle)
       }
     }
+    // the seam sector — where the added/removed arc length is absorbed
+    const sHalf = overlay.seamDeg / 2
+    const sc = overlay.seamCenterDeg
+    this.resizeGroup.add(this.buildSectorMesh(overlay, sc - sHalf, sc + sHalf, r0, r1, 0xef6a4c, 0.4))
 
     // before/after labels stacked above the ring (world up)
     const center = new THREE.Vector3()
@@ -1352,6 +1365,56 @@ export class SceneManager {
     return this.survey !== null
   }
 
+  // ---------- resize strain preview (plan §2.6) ----------
+
+  /**
+   * Paint (or clear, with nulls) the resizer's tangential-strain preview:
+   * neutral where the surface is untouched/bent-only, red where the mapping
+   * stretches it, blue where it compresses. Transient overlay, mutually
+   * exclusive with the heatmap/clearance/survey paints.
+   */
+  setResizeStrain(id: string | null, values: Float32Array | null) {
+    if (!id || !values) {
+      this.clearResizeStrain()
+      return
+    }
+    const part = this.parts.get(id)
+    if (!part) return
+    this.clearThicknessHeatmap()
+    this.clearClearanceMap()
+    this.clearUndercutSurvey()
+    if (this.strain && this.strain.id !== id) this.clearResizeStrain()
+    this.strain = { id, values }
+    this.paintResizeStrain(part)
+  }
+
+  private paintResizeStrain(part: ScenePart) {
+    const s = this.strain!
+    let maxAbs = 0.02 // floor: tiny numeric strain stays neutral
+    for (let v = 0; v < s.values.length; v++) {
+      const a = Math.abs(s.values[v])
+      if (a > maxAbs) maxAbs = a
+    }
+    const srcColors = new Float32Array(part.data.positions.length)
+    for (let v = 0; v < s.values.length; v++) {
+      const [r, g, b] = strainColor(s.values[v], maxAbs)
+      srcColors[v * 3] = r
+      srcColors[v * 3 + 1] = g
+      srcColors[v * 3 + 2] = b
+    }
+    this.applyColorAttribute(part, srcColors)
+    part.mesh.material = this.getVertexColorMaterial(part.flatShading)
+    part.backMesh.visible = false
+  }
+
+  clearResizeStrain() {
+    const s = this.strain
+    if (!s) return
+    this.strain = null
+    const part = this.parts.get(s.id)
+    if (part) this.applyPartMaterial(part) // restores preset / imported colours
+  }
+
   // ---------- grillz surface brush-select (plan §3.3) ----------
 
   /**
@@ -1417,12 +1480,21 @@ export class SceneManager {
     if (this.brush) this.brush.radius = radius
   }
 
-  /** Empty the painted selection (keeps the brush armed). */
+  /**
+   * Empty the painted selection. An interactive brush stays armed (empty overlay,
+   * ready to repaint); a passive overlay (wand result, disarmed brush) is dropped
+   * entirely so the part gets its real material back — otherwise the grey overlay
+   * is unreachable once the Clear button disappears.
+   */
   clearBrushSelection() {
     if (!this.brush) return
-    this.brush.selected.clear()
-    const part = this.parts.get(this.brush.id)
-    if (part) this.paintBrushOverlay(part)
+    if (this.brush.interactive) {
+      this.brush.selected.clear()
+      const part = this.parts.get(this.brush.id)
+      if (part) this.paintBrushOverlay(part)
+    } else {
+      this.clearBrushOverlay()
+    }
     this.emit('brushSelectionChanged', 0)
   }
 
