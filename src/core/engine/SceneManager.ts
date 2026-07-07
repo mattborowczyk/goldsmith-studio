@@ -627,6 +627,62 @@ export class SceneManager {
     if (this.selectedId) this.gizmo.attach(this.parts.get(this.selectedId)!.mesh)
   }
 
+  /**
+   * Move a part's transform origin to its geometry's bounding-box centre without
+   * moving the part in the world. The move/rotate/scale gizmo pivots about the
+   * mesh origin, so this re-centres the gizmo on the part. No-op when the origin
+   * is already centred. Returns true when the part exists.
+   */
+  recenterPartOrigin(id: string): boolean {
+    const part = this.parts.get(id)
+    if (!part) return false
+    const p = part.data.positions
+    if (p.length < 3) return false
+    const min = [Infinity, Infinity, Infinity]
+    const max = [-Infinity, -Infinity, -Infinity]
+    for (let i = 0; i < p.length; i += 3) {
+      for (let k = 0; k < 3; k++) {
+        const v = p[i + k]
+        if (v < min[k]) min[k] = v
+        if (v > max[k]) max[k] = v
+      }
+    }
+    const c = new THREE.Vector3(
+      (min[0] + max[0]) / 2,
+      (min[1] + max[1]) / 2,
+      (min[2] + max[2]) / 2,
+    )
+    if (c.lengthSq() < 1e-12) return true // origin already on the centroid
+
+    // shift the source vertices so the local origin lands on the centroid …
+    const shifted = new Float32Array(p.length)
+    for (let i = 0; i < p.length; i += 3) {
+      shifted[i] = p[i] - c.x
+      shifted[i + 1] = p[i + 1] - c.y
+      shifted[i + 2] = p[i + 2] - c.z
+    }
+    part.data = { positions: shifted, indices: part.data.indices }
+
+    // … and compensate in local space so the part does not move in the world:
+    // world = M · v is preserved by M' = M · T(c) because v' = v − c.
+    part.mesh.updateMatrix()
+    part.mesh.matrix.multiply(new THREE.Matrix4().makeTranslation(c.x, c.y, c.z))
+    part.mesh.matrix.decompose(part.mesh.position, part.mesh.quaternion, part.mesh.scale)
+    part.mesh.updateMatrixWorld(true)
+
+    // rebuild the display geometry (shared with the back overlay) from the shift
+    const geo = this.buildDisplayGeometry(part.data)
+    part.mesh.geometry = geo
+    part.backMesh.geometry = geo
+    part.displayGeometry.dispose()
+    part.displayGeometry = geo
+    this.applyPartMaterial(part) // reinstate vertex colours / per-part material
+
+    this.updateShadowRig()
+    this.emit('partsChanged')
+    return true
+  }
+
   /** Pointer event → normalized device coords in the canvas. */
   private ndcOf(e: PointerEvent): THREE.Vector2 {
     const rect = this.renderer.domElement.getBoundingClientRect()
