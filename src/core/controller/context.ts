@@ -104,12 +104,47 @@ export function requireSelection(onError?: (message: string) => void): string | 
   return null
 }
 
+/**
+ * Re-seat a world-space mesh so its transform origin sits at the geometry's
+ * bounding-box centre, with the offset carried in the part matrix. The move/
+ * resize gizmo pivots about the mesh origin, so baking world coordinates in at
+ * the identity matrix would snap the gizmo to the scene origin whenever the part
+ * lives off-centre. Centring keeps the gizmo on the part, as it is for a freshly
+ * imported model.
+ */
+function centerWorldMesh(mesh: MeshData): { data: MeshData; matrix: number[] } {
+  const p = mesh.positions
+  const min = [Infinity, Infinity, Infinity]
+  const max = [-Infinity, -Infinity, -Infinity]
+  for (let i = 0; i < p.length; i += 3) {
+    for (let k = 0; k < 3; k++) {
+      const v = p[i + k]
+      if (v < min[k]) min[k] = v
+      if (v > max[k]) max[k] = v
+    }
+  }
+  const c = [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2]
+  if (!c.every(Number.isFinite)) return { data: mesh, matrix: [...IDENTITY_MATRIX] }
+  const positions = new Float32Array(p.length)
+  for (let i = 0; i < p.length; i += 3) {
+    positions[i] = p[i] - c[0]
+    positions[i + 1] = p[i + 1] - c[1]
+    positions[i + 2] = p[i + 2] - c[2]
+  }
+  // column-major 4×4: identity rotation, translation in the last column
+  const matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, c[0], c[1], c[2], 1]
+  return { data: { positions, indices: mesh.indices.slice() }, matrix }
+}
+
+const IDENTITY_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+
 export function replaceWithWorldMesh(id: string, mesh: MeshData) {
   const eng = getEngine()
   const info = eng.partInfo(id)
   if (!info) return
   eng.removePart(id)
-  eng.addPart(id, info.name, mesh)
+  const { data, matrix } = centerWorldMesh(mesh)
+  eng.addPart(id, info.name, data, matrix)
   eng.select(id)
 }
 

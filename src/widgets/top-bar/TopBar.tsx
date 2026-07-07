@@ -1,5 +1,6 @@
 import {
   Camera,
+  Crosshair,
   Grid3X3,
   ImageDown,
   Maximize,
@@ -111,6 +112,15 @@ export function TopBar() {
             <Icon />
           </Button>
         ))}
+        <Button
+          variant="ghost"
+          size="iconSm"
+          title="Center gizmo on object"
+          disabled={!selectedId}
+          onClick={() => selectedId && getEngine().recenterPartOrigin(selectedId)}
+        >
+          <Crosshair />
+        </Button>
       </div>
 
       <div className="ml-auto flex items-center gap-2">
